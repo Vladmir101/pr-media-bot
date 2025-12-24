@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: pr-media-bot
+    env: node
+    buildCommand: npm install
+    startCommand: node bot.js
