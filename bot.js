@@ -1324,32 +1324,45 @@ class PRBot {
 
 // Создаем и запускаем бота, если файл запущен напрямую
 if (require.main === module) {
-  // Проверяем, запускаем ли мы в облаке (Replit/Railway)
-  const useWebhook = process.env.REPLIT_URL || process.env.RAILWAY_URL || false;
+  // Сначала инициализируем базу данных
+  const { initDatabase } = require('./database');
   
-  const prBot = new PRBot(useWebhook);
-  
-  if (useWebhook) {
-    // Запускаем через вебхук
-    console.log("🚀 Запуск бота в режиме вебхука...");
-    prBot.startWebhook('/webhook');
-    console.log("✅ Бот запущен в режиме вебхука!");
-  } else {
-    // Локальный запуск с polling
-    console.log("✅ Бот успешно запущен локально (polling)!");
-    
-    // ЗАПУСКАЕМ АДМИН-ПАНЕЛЬ (только локально)
-    console.log("🔄 Запуск админ-панели...");
-    try {
-      const admin = require('./admin.js');
-      admin.start();
-      console.log("✅ Админ-панель запущена!");
-    } catch (error) {
-      console.log("❌ Не удалось запустить админ-панель:");
-      console.log("   Ошибка:", error.message);
-      console.log("   Запустите отдельно: node admin.js");
+  initDatabase().then(async (success) => {
+    if (!success) {
+      console.error('❌ Не удалось инициализировать базу данных');
+      process.exit(1);
     }
-  }
+    
+    // Проверяем, запускаем ли мы в облаке (Replit/Railway)
+    const useWebhook = process.env.REPLIT_URL || process.env.RAILWAY_URL || false;
+    
+    const prBot = new PRBot(useWebhook);
+    
+    if (useWebhook) {
+      // Запускаем через вебхук
+      console.log("🚀 Запуск бота в режиме вебхука...");
+      prBot.startWebhook('/webhook');
+      console.log("✅ Бот запущен в режиме вебхука!");
+    } else {
+      // Локальный запуск с polling
+      console.log("✅ Бот успешно запущен локально (polling)!");
+      
+      // ЗАПУСКАЕМ АДМИН-ПАНЕЛЬ (только локально)
+      console.log("🔄 Запуск админ-панели...");
+      try {
+        const admin = require('./admin.js');
+        admin.start();
+        console.log("✅ Админ-панель запущена!");
+      } catch (error) {
+        console.log("❌ Не удалось запустить админ-панель:");
+        console.log("   Ошибка:", error.message);
+        console.log("   Запустите отдельно: node admin.js");
+      }
+    }
+  }).catch(error => {
+    console.error('❌ Не удалось запустить бота:', error);
+    process.exit(1);
+  });
 } else {
   module.exports = PRBot;
 }
