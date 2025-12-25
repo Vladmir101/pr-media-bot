@@ -16,13 +16,12 @@ class PRBot {
       }
     };
     
-    // Если нужен вебхук (для Replit/Railway)
     if (useWebhook) {
-      // Без polling, будем обрабатывать вебхуки
+      // В режиме вебхука НЕ включаем polling
       this.bot = new TelegramBot(process.env.BOT_TOKEN, options);
-      console.log('🤖 Бот инициализирован в режиме вебхука');
+      console.log('🤖 Бот инициализирован в режиме вебхука (polling отключен)');
     } else {
-      // Для локального запуска оставляем polling
+      // В режиме polling включаем polling
       options.polling = true;
       this.bot = new TelegramBot(process.env.BOT_TOKEN, options);
       console.log('🤖 Бот инициализирован в режиме polling');
@@ -36,14 +35,23 @@ class PRBot {
     // Инициализируем парсер PR-новостей
     this.prParser = new (require('./pr-news-parser'))();
     
-    this.initHandlers();
-    this.initCSVCommands(); // Добавляем CSV команды
+    // В режиме вебхука инициализируем обработчики ПОСЛЕ запуска вебхука
+    if (!useWebhook) {
+      this.initHandlers();
+      this.initCSVCommands();
+    }
   }
   
   // Метод для запуска через вебхук
   startWebhook(webhookPath, port = process.env.PORT || 3000) {
+    // Инициализируем обработчики перед запуском вебхука
+    this.initHandlers();
+    this.initCSVCommands();
+    
     // Устанавливаем вебхук
-    const webhookUrl = `${process.env.REPLIT_URL || process.env.RAILWAY_URL}${webhookPath}`;
+    const webhookUrl = `${process.env.REPLIT_URL || process.env.RAILWAY_URL || process.env.RENDER_URL || ''}${webhookPath}`;
+    
+    console.log(`🔗 Устанавливаю вебхук: ${webhookUrl}`);
     
     this.bot.setWebHook(webhookUrl)
       .then(() => {
@@ -58,6 +66,11 @@ class PRBot {
     const app = express();
     app.use(express.json());
     
+    // Health check endpoint для Render
+    app.get('/health', (req, res) => {
+      res.status(200).send('OK');
+    });
+    
     // Обработчик вебхука от Telegram
     app.post(webhookPath, (req, res) => {
       this.bot.processUpdate(req.body);
@@ -68,6 +81,7 @@ class PRBot {
     app.listen(port, () => {
       console.log(`🚀 Сервер запущен на порту ${port}`);
       console.log(`🌐 Вебхук: ${webhookPath}`);
+      console.log(`🏥 Health check: http://localhost:${port}/health`);
     });
     
     return app;
@@ -1332,32 +1346,43 @@ if (require.main === module) {
       process.exit(1);
     }
     
-    // Проверяем, запускаем ли мы в облаке (Replit/Railway) или на Render
-const useWebhook = process.env.USE_WEBHOOK === 'true' || 
-                   process.env.REPLIT_URL || 
-                   process.env.RAILWAY_URL || 
-                   false;
-    
-const prBot = new PRBot(useWebhook);
-    
-if (useWebhook) {
-  // Запускаем через вебхук
-  console.log("🚀 Запуск бота в режиме вебхука...");
-  prBot.startWebhook('/webhook', process.env.PORT || 3000);
-  console.log("✅ Бот запущен в режиме вебхука!");
-} else {
-  // Локальный запуск с polling
-  console.log("✅ Бот успешно запущен локально (polling)!");
-  
-  // Запускаем админ-панель (только если не в production)
-  if (process.env.NODE_ENV !== 'production') {
-    console.log("🔄 Запуск админ-панели...");
-    try {
-      const admin = require('./admin.js');
-      admin.start();
-      console.log("✅ Админ-панель запущена!");
-    } catch (error) {
-      console.log("❌ Не удалось запустить админ-панель:", error.message);
+    // Проверяем, запускаем ли мы на Render/Replit/Railway
+    const useWebhook = process.env.USE_WEBHOOK === 'true' || 
+                       process.env.REPLIT_URL || 
+                       process.env.RAILWAY_URL || 
+                       false;
+
+    console.log(`🔄 Режим запуска: ${useWebhook ? 'Вебхук' : 'Polling'}`);
+    console.log(`🌐 PORT: ${process.env.PORT}`);
+    console.log(`⚙️ NODE_ENV: ${process.env.NODE_ENV}`);
+
+    const prBot = new PRBot(useWebhook);
+
+    if (useWebhook) {
+      // Запускаем через вебхук
+      console.log("🚀 Запуск бота в режиме вебхука...");
+      prBot.startWebhook('/webhook', process.env.PORT || 3000);
+      console.log("✅ Бот запущен в режиме вебхука!");
+    } else {
+      // Локальный запуск с polling
+      console.log("✅ Бот успешно запущен локально (polling)!");
+      
+      // Запускаем админ-панель (только если не в production)
+      if (process.env.NODE_ENV !== 'production') {
+        console.log("🔄 Запуск админ-панели...");
+        try {
+          const admin = require('./admin.js');
+          admin.start();
+          console.log("✅ Админ-панель запущена!");
+        } catch (error) {
+          console.log("❌ Не удалось запустить админ-панель:", error.message);
+        }
+      }
     }
-  }
+  }).catch(error => {
+    console.error('❌ Не удалось запустить бота:', error);
+    process.exit(1);
+  });
+} else {
+  module.exports = PRBot;
 }
