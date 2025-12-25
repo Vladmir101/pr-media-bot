@@ -1,6 +1,6 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const { User, SMI, Award, Jury, Association, SearchQuery, findSMI, importSMIFromCSV, searchSMILikeCSV } = require('./database');
+const { User, SMI, Award, Jury, Association, SearchQuery, findSMI, importSMIFromCSV, searchSMILikeCSV, initDatabase } = require('./database');
 const keyboards = require('./keyboards');
 const stateManager = require('./states');
 const utils = require('./utils');
@@ -44,6 +44,8 @@ class PRBot {
   startWebhook(webhookPath, port = process.env.PORT || 3000) {
     // Устанавливаем вебхук
     const webhookUrl = process.env.WEBHOOK_URL || `${process.env.REPLIT_URL || process.env.RAILWAY_URL || process.env.RENDER_URL || ''}${webhookPath}`;
+    
+    console.log(`🔗 Устанавливаю вебхук: ${webhookUrl}`);
     
     this.bot.setWebHook(webhookUrl)
       .then(() => {
@@ -1638,25 +1640,44 @@ if (require.main === module) {
   console.log(`🌐 PORT: ${process.env.PORT || 3000}`);
   console.log(`⚙️ USE_WEBHOOK: ${process.env.USE_WEBHOOK || 'false'}`);
   
-  const prBot = new PRBot(useWebhook);
-  
-  if (useWebhook) {
-    console.log("🚀 Запуск бота в режиме вебхука...");
-    prBot.startWebhook('/webhook', process.env.PORT || 3000);
-    console.log("✅ Бот запущен в режиме вебхука!");
-  } else {
-    console.log("✅ Бот успешно запущен локально (polling)!");
+  // === ДОБАВЛЕНО: ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ===
+  initDatabase().then(() => {
+    console.log('✅ База данных готова к работе');
     
-    console.log("🔄 Запуск админ-панели...");
-    try {
-      const admin = require('./admin.js');
-      admin.start();
-      console.log("✅ Админ-панель запущена!");
-    } catch (error) {
-      console.log("❌ Не удалось запустить админ-панель:");
-      console.log("   Ошибка:", error.message);
+    const prBot = new PRBot(useWebhook);
+    
+    if (useWebhook) {
+      console.log("🚀 Запуск бота в режиме вебхука...");
+      prBot.startWebhook('/webhook', process.env.PORT || 3000);
+      console.log("✅ Бот запущен в режиме вебхука!");
+    } else {
+      console.log("✅ Бот успешно запущен локально (polling)!");
+      
+      console.log("🔄 Запуск админ-панели...");
+      try {
+        const admin = require('./admin.js');
+        admin.start();
+        console.log("✅ Админ-панель запущена!");
+      } catch (error) {
+        console.log("❌ Не удалось запустить админ-панель:");
+        console.log("   Ошибка:", error.message);
+      }
     }
-  }
+  }).catch(err => {
+    console.error('❌ Ошибка инициализации БД:', err.message);
+    console.log('⚠️ Бот запускается без базы данных...');
+    
+    const prBot = new PRBot(useWebhook);
+    
+    if (useWebhook) {
+      console.log("🚀 Запуск бота в режиме вебхука...");
+      prBot.startWebhook('/webhook', process.env.PORT || 3000);
+      console.log("✅ Бот запущен в режиме вебхука!");
+    } else {
+      console.log("✅ Бот успешно запущен локально (polling)!");
+    }
+  });
+  // ===========================================
 } else {
   module.exports = PRBot;
 }

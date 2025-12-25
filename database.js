@@ -1,17 +1,36 @@
 const { Sequelize, DataTypes, Op } = require('sequelize');
 const path = require('path');
 
-// На Render используем SQLite в памяти, локально — файл
-const storagePath = process.env.NODE_ENV === 'production' 
-  ? ':memory:'  // В памяти для Render (данные теряются при перезапуске)
-  : path.join(__dirname, 'database.db');  // Локально для разработки
+// ========== КОНФИГУРАЦИЯ БАЗЫ ДАННЫХ ==========
+// Для Render используем PostgreSQL, локально — SQLite
+let sequelize;
 
-// Инициализация базы данных
-const sequelize = new Sequelize({
-  dialect: 'sqlite',
-  storage: storagePath,
-  logging: false
-});
+if (process.env.NODE_ENV === 'production' && process.env.DATABASE_URL) {
+  // PostgreSQL для продакшена (Render)
+  sequelize = new Sequelize(process.env.DATABASE_URL, {
+    dialect: 'postgres',
+    protocol: 'postgres',
+    dialectOptions: {
+      ssl: {
+        require: true,
+        rejectUnauthorized: false
+      }
+    },
+    logging: false
+  });
+  console.log('📊 Используется PostgreSQL (Render)');
+} else {
+  // SQLite для локальной разработки
+  const storagePath = path.join(__dirname, 'database.db');
+  sequelize = new Sequelize({
+    dialect: 'sqlite',
+    storage: storagePath,
+    logging: false
+  });
+  console.log('📊 Используется SQLite (локально)');
+}
+
+// ========== МОДЕЛИ БАЗЫ ДАННЫХ ==========
 
 // Модель пользователя
 const User = sequelize.define('User', {
@@ -180,13 +199,15 @@ const SearchQuery = sequelize.define('SearchQuery', {
   }
 });
 
-// Функция инициализации базы данных
+// ========== ФУНКЦИИ РАБОТЫ С БАЗОЙ ==========
+
+// Инициализация базы данных
 async function initDatabase() {
   try {
     await sequelize.authenticate();
     console.log('✅ Подключение к базе данных установлено');
     
-    // Синхронизация моделей
+    // Синхронизация моделей (force: false - не удалять существующие данные)
     await sequelize.sync({ force: false });
     console.log('✅ Модели синхронизированы');
     
@@ -204,7 +225,7 @@ async function initDatabase() {
   }
 }
 
-// Функция для поиска СМИ
+// Поиск СМИ по фильтрам
 async function findSMI(filters) {
   const whereClause = { isActive: true };
   
@@ -213,7 +234,6 @@ async function findSMI(filters) {
   
   if (filters.backdated === 'Да') whereClause.backdated = true;
   else if (filters.backdated === 'Нет') whereClause.backdated = false;
-  // Если 'Не важно' или null - не фильтруем
   
   if (filters.audience) {
     switch(filters.audience) {
@@ -229,7 +249,6 @@ async function findSMI(filters) {
       case '👥👥👥 Более 1 млн':
         whereClause.audienceNumber = { [Op.gt]: 1000000 };
         break;
-      // '🌐 Любой охват' - не фильтруем
     }
   }
   
@@ -310,10 +329,12 @@ async function createTestData() {
   await SMI.bulkCreate(testData);
   console.log(`✅ Создано ${testData.length} тестовых записей СМИ`);
 }
+
+// ========== CSV ФУНКЦИИ ==========
 const fs = require('fs');
 const csv = require('csv-parser');
 
-// Функция для импорта данных из CSV в таблицу SMI
+// Импорт данных из CSV
 async function importSMIFromCSV(filePath) {
   return new Promise((resolve, reject) => {
     const smiRecords = [];
@@ -328,7 +349,6 @@ async function importSMIFromCSV(filePath) {
     fs.createReadStream(filePath)
       .pipe(csv())
       .on('data', (row) => {
-        // Очищаем и преобразуем данные
         const record = {
           name: row.name ? row.name.trim() : '',
           category: row.category ? row.category.trim() : '',
@@ -343,7 +363,6 @@ async function importSMIFromCSV(filePath) {
           isActive: true
         };
         
-        // Обрабатываем audience если audienceNumber не указан
         if (!row.audienceNumber && row.audience) {
           const audienceStr = row.audience.toString().toUpperCase();
           if (audienceStr.includes('M') || audienceStr.includes('М')) {
@@ -361,22 +380,18 @@ async function importSMIFromCSV(filePath) {
         console.log(`✅ Прочитано ${smiRecords.length} записей из CSV`);
         
         try {
-          // Вставляем записи в базу данных
           let importedCount = 0;
           let updatedCount = 0;
           
           for (const record of smiRecords) {
-            // Проверяем, существует ли уже запись с таким именем
             const existing = await SMI.findOne({ 
               where: { name: record.name } 
             });
             
             if (existing) {
-              // Обновляем существующую запись
               await existing.update(record);
               updatedCount++;
             } else {
-              // Создаем новую запись
               await SMI.create(record);
               importedCount++;
             }
@@ -400,7 +415,7 @@ async function importSMIFromCSV(filePath) {
   });
 }
 
-// Функция для экспорта данных SMI в CSV
+// Экспорт данных в CSV
 async function exportSMIToCSV(filePath) {
   try {
     const allSMI = await SMI.findAll({
@@ -413,11 +428,9 @@ async function exportSMIToCSV(filePath) {
       return false;
     }
     
-    // Создаем CSV заголовок
     const headers = ['name', 'category', 'country', 'backdated', 'audience', 'audienceNumber', 'contact', 'price', 'description', 'website'];
     let csvContent = headers.join(',') + '\n';
     
-    // Добавляем данные
     allSMI.forEach(smi => {
       const row = [
         `"${smi.name.replace(/"/g, '""')}"`,
@@ -435,7 +448,6 @@ async function exportSMIToCSV(filePath) {
       csvContent += row.join(',') + '\n';
     });
     
-    // Сохраняем в файл
     fs.writeFileSync(filePath, csvContent, 'utf8');
     console.log(`✅ Экспортировано ${allSMI.length} записей в ${filePath}`);
     
@@ -446,14 +458,12 @@ async function exportSMIToCSV(filePath) {
   }
 }
 
-// Функция для синхронизации CSV с базой данных
+// Синхронизация CSV с базой
 async function syncCSVWithDatabase(csvFilePath) {
   console.log('🔄 Синхронизация CSV с базой данных...');
   
   try {
     const result = await importSMIFromCSV(csvFilePath);
-    
-    // Также экспортируем обновленные данные обратно в CSV
     await exportSMIToCSV(csvFilePath);
     
     console.log('✅ Синхронизация завершена');
@@ -464,11 +474,10 @@ async function syncCSVWithDatabase(csvFilePath) {
   }
 }
 
-// Функция для поиска по CSV-подобным фильтрам
+// Поиск по CSV-фильтрам
 async function searchSMILikeCSV(filters = {}) {
   const whereClause = { isActive: true };
   
-  // Поддерживаем все те же фильтры что и в findSMI
   if (filters.category) whereClause.category = { [Op.like]: `%${filters.category}%` };
   if (filters.country && filters.country !== 'Все страны') whereClause.country = { [Op.like]: `%${filters.country}%` };
   
@@ -477,7 +486,6 @@ async function searchSMILikeCSV(filters = {}) {
   if (filters.backdated === 'Да') whereClause.backdated = true;
   else if (filters.backdated === 'Нет') whereClause.backdated = false;
   
-  // Фильтр по цене (бюджет)
   if (filters.maxPrice) {
     const maxPrice = parseInt(filters.maxPrice);
     if (!isNaN(maxPrice)) {
@@ -485,7 +493,6 @@ async function searchSMILikeCSV(filters = {}) {
     }
   }
   
-  // Фильтр по аудитории
   if (filters.minAudience) {
     const minAudience = parseInt(filters.minAudience);
     if (!isNaN(minAudience)) {
@@ -506,6 +513,7 @@ async function searchSMILikeCSV(filters = {}) {
   return results;
 }
 
+// ========== ЭКСПОРТ МОДУЛЯ ==========
 module.exports = {
   sequelize,
   User,
@@ -516,7 +524,6 @@ module.exports = {
   SearchQuery,
   initDatabase,
   findSMI,
-  // Новые функции для работы с CSV
   importSMIFromCSV,
   exportSMIToCSV,
   syncCSVWithDatabase,
