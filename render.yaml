@@ -4,3 +4,11 @@ services:
     env: node
     buildCommand: npm install
     startCommand: node bot.js
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: USE_WEBHOOK
+        value: true
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /health
