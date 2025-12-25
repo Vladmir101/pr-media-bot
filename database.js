@@ -1,10 +1,15 @@
 const { Sequelize, DataTypes, Op } = require('sequelize');
 const path = require('path');
 
+// На Render используем SQLite в памяти, локально — файл
+const storagePath = process.env.NODE_ENV === 'production' 
+  ? ':memory:'  // В памяти для Render (данные теряются при перезапуске)
+  : path.join(__dirname, 'database.db');  // Локально для разработки
+
 // Инициализация базы данных
 const sequelize = new Sequelize({
   dialect: 'sqlite',
-  storage: path.join(__dirname, '../database.db'),
+  storage: storagePath,
   logging: false
 });
 
