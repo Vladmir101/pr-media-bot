@@ -43,9 +43,7 @@ class PRBot {
   // Метод для запуска через вебхук
   startWebhook(webhookPath, port = process.env.PORT || 3000) {
     // Устанавливаем вебхук
-    const webhookUrl = `${process.env.REPLIT_URL || process.env.RAILWAY_URL || process.env.RENDER_URL || ''}${webhookPath}`;
-    
-    console.log(`🔗 Устанавливаю вебхук: ${webhookUrl}`);
+    const webhookUrl = process.env.WEBHOOK_URL || `${process.env.REPLIT_URL || process.env.RAILWAY_URL || process.env.RENDER_URL || ''}${webhookPath}`;
     
     this.bot.setWebHook(webhookUrl)
       .then(() => {
