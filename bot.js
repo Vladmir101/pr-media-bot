@@ -1332,36 +1332,32 @@ if (require.main === module) {
       process.exit(1);
     }
     
-    // Проверяем, запускаем ли мы в облаке (Replit/Railway)
-    const useWebhook = process.env.REPLIT_URL || process.env.RAILWAY_URL || false;
+    // Проверяем, запускаем ли мы в облаке (Replit/Railway) или на Render
+const useWebhook = process.env.USE_WEBHOOK === 'true' || 
+                   process.env.REPLIT_URL || 
+                   process.env.RAILWAY_URL || 
+                   false;
     
-    const prBot = new PRBot(useWebhook);
+const prBot = new PRBot(useWebhook);
     
-    if (useWebhook) {
-      // Запускаем через вебхук
-      console.log("🚀 Запуск бота в режиме вебхука...");
-      prBot.startWebhook('/webhook');
-      console.log("✅ Бот запущен в режиме вебхука!");
-    } else {
-      // Локальный запуск с polling
-      console.log("✅ Бот успешно запущен локально (polling)!");
-      
-      // Запускаем админ-панель (только если не в production)
-      if (process.env.NODE_ENV !== 'production') {
-        console.log("🔄 Запуск админ-панели...");
-        try {
-          const admin = require('./admin.js');
-          admin.start();
-          console.log("✅ Админ-панель запущена!");
-        } catch (error) {
-          console.log("❌ Не удалось запустить админ-панель:", error.message);
-        }
-      }
-    }
-  }).catch(error => {
-    console.error('❌ Не удалось запустить бота:', error);
-    process.exit(1);
-  });
+if (useWebhook) {
+  // Запускаем через вебхук
+  console.log("🚀 Запуск бота в режиме вебхука...");
+  prBot.startWebhook('/webhook', process.env.PORT || 3000);
+  console.log("✅ Бот запущен в режиме вебхука!");
 } else {
-  module.exports = PRBot;
+  // Локальный запуск с polling
+  console.log("✅ Бот успешно запущен локально (polling)!");
+  
+  // Запускаем админ-панель (только если не в production)
+  if (process.env.NODE_ENV !== 'production') {
+    console.log("🔄 Запуск админ-панели...");
+    try {
+      const admin = require('./admin.js');
+      admin.start();
+      console.log("✅ Админ-панель запущена!");
+    } catch (error) {
+      console.log("❌ Не удалось запустить админ-панель:", error.message);
+    }
+  }
 }
