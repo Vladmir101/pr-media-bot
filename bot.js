@@ -511,6 +511,137 @@ class PRBot {
         });
       }
     });
+    
+    // Команда /initdb для создания таблиц в базе данных
+    this.bot.onText(/\/initdb/, async (msg) => {
+      const chatId = msg.chat.id;
+      
+      if (!this.isAdmin(chatId)) {
+        await this.bot.sendMessage(chatId, '⛔ У вас нет прав администратора');
+        return;
+      }
+      
+      try {
+        await this.bot.sendMessage(chatId, '🔄 Создаю таблицы в базе данных...');
+        await initDatabase();
+        await this.bot.sendMessage(chatId, '✅ Таблицы успешно созданы! Теперь используйте /csv_import для загрузки данных.');
+      } catch (error) {
+        await this.bot.sendMessage(chatId, `❌ Ошибка: ${error.message}`);
+      }
+    });
+    
+    // Команда /checkall для полной проверки системы
+    this.bot.onText(/\/checkall/, async (msg) => {
+      const chatId = msg.chat.id;
+      
+      try {
+        // 1. Проверяем подключение к базе данных
+        await require('./database').sequelize.authenticate();
+        
+        let report = `📊 *ПОЛНЫЙ ОТЧЕТ О СИСТЕМЕ:*\n\n`;
+        
+        // 2. Проверяем таблицы в базе данных
+        const [tables] = await require('./database').sequelize.query(`
+          SELECT table_name, 
+                 (SELECT COUNT(*) FROM information_schema.columns 
+                  WHERE table_schema = 'public' AND table_name = t.table_name) as columns_count
+          FROM information_schema.tables t
+          WHERE table_schema = 'public'
+          ORDER BY table_name
+        `);
+        
+        report += `🗄️ *БАЗА ДАННЫХ:*\n`;
+        report += `• Статус: ✅ Подключена\n`;
+        report += `• Таблиц: ${tables.length}\n\n`;
+        
+        if (tables.length > 0) {
+          report += `📋 *Таблицы:*\n`;
+          tables.forEach((table, i) => {
+            report += `${i+1}. ${table.table_name} (${table.columns_count} колонок)\n`;
+          });
+        } else {
+          report += `❌ *Таблицы не найдены!*\n`;
+          report += `Используйте /initdb для создания таблиц\n\n`;
+        }
+        
+        // 3. Проверяем таблицу smis
+        const smisTable = tables.find(t => t.table_name === 'smis');
+        if (smisTable) {
+          const [countResult] = await require('./database').sequelize.query('SELECT COUNT(*) as total FROM smis');
+          const count = countResult[0].total;
+          
+          report += `\n📈 *Таблица smis:*\n`;
+          report += `• Записей: ${count}\n`;
+          
+          if (count > 0) {
+            // Показываем статистику по категориям
+            const [categories] = await require('./database').sequelize.query(`
+              SELECT category, COUNT(*) as count 
+              FROM smis 
+              WHERE category IS NOT NULL 
+              GROUP BY category 
+              ORDER BY count DESC 
+              LIMIT 5
+            `);
+            
+            if (categories.length > 0) {
+              report += `• Топ-5 категорий:\n`;
+              categories.forEach((cat, i) => {
+                report += `  ${i+1}. ${cat.category || 'без категории'}: ${cat.count}\n`;
+              });
+            }
+          } else {
+            report += `• Статус: ⭕ Пустая\n`;
+            report += `  Используйте /csv_import для загрузки данных из CSV файла\n`;
+          }
+        }
+        
+        // 4. Проверяем CSV файл на сервере
+        const fs = require('fs');
+        const csvPath = './smi-import-fixed.csv';
+        const csvExists = fs.existsSync(csvPath);
+        
+        report += `\n📁 *CSV ФАЙЛ:*\n`;
+        report += `• Наличие: ${csvExists ? '✅ Найден' : '❌ Не найден'}\n`;
+        
+        if (csvExists) {
+          const stats = fs.statSync(csvPath);
+          const fileSizeMB = (stats.size / 1024 / 1024).toFixed(2);
+          report += `• Размер: ${fileSizeMB} MB\n`;
+          report += `• Обновлен: ${stats.mtime.toLocaleDateString()}\n`;
+          
+          // Читаем первую строку для проверки
+          const data = fs.readFileSync(csvPath, 'utf8');
+          const lines = data.split('\n').length;
+          report += `• Строк: ~${lines}\n`;
+        }
+        
+        // 5. Проверяем переменные окружения
+        report += `\n⚙️ *ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ:*\n`;
+        report += `• DATABASE_URL: ${process.env.DATABASE_URL ? '✅ Настроен' : '❌ Не настроен'}\n`;
+        report += `• BOT_TOKEN: ${process.env.BOT_TOKEN ? '✅ Настроен' : '❌ Не настроен'}\n`;
+        
+        report += `\n⏰ *Последняя проверка:* ${new Date().toLocaleString()}`;
+        
+        await this.bot.sendMessage(chatId, report, { parse_mode: 'Markdown' });
+        
+      } catch (error) {
+        await this.bot.sendMessage(chatId, 
+          `❌ *ОШИБКА ПРОВЕРКИ СИСТЕМЫ:*\n\n` +
+          `*Сообщение ошибки:* ${error.message}\n\n` +
+          `*DATABASE_URL:* ${process.env.DATABASE_URL ? '✅ Настроен' : '❌ Не настроен'}\n\n` +
+          `*Возможные причины:*\n` +
+          `1. DATABASE_URL не настроен в Render Environment\n` +
+          `2. База данных недоступна или перезагружается\n` +
+          `3. Проблемы с сетевым подключением\n\n` +
+          `*Что делать:*\n` +
+          `1. Проверьте статус базы данных на Render\n` +
+          `2. Убедитесь что DATABASE_URL правильный\n` +
+          `3. Попробуйте команду /initdb для создания таблиц`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+    });
   }
   
   // Инициализация быстрого поиска
