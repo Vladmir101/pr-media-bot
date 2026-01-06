@@ -571,7 +571,7 @@ class PRBot {
         // 1. Проверяем подключение к базе данных
         await require('./database').sequelize.authenticate();
         
-        let report = `📊 *ПОЛНЫЙ ОТЧЕТ О СИСТЕМЕ:*\n\n`;
+        let report = `📊 ПОЛНЫЙ ОТЧЕТ О СИСТЕМЕ:\n\n`;
         
         // 2. Проверяем таблицы в базе данных
         const [tables] = await require('./database').sequelize.query(`
@@ -583,17 +583,17 @@ class PRBot {
           ORDER BY table_name
         `);
         
-        report += `🗄️ *БАЗА ДАННЫХ:*\n`;
+        report += `🗄️ БАЗА ДАННЫХ:\n`;
         report += `• Статус: ✅ Подключена\n`;
         report += `• Таблиц: ${tables.length}\n\n`;
         
         if (tables.length > 0) {
-          report += `📋 *Таблицы:*\n`;
+          report += `📋 Таблицы:\n`;
           tables.forEach((table, i) => {
             report += `${i+1}. ${table.table_name} (${table.columns_count} колонок)\n`;
           });
         } else {
-          report += `❌ *Таблицы не найдены!*\n`;
+          report += `❌ Таблицы не найдены!\n`;
           report += `Используйте /initdb для создания таблиц\n\n`;
         }
         
@@ -603,7 +603,7 @@ class PRBot {
           const [countResult] = await require('./database').sequelize.query('SELECT COUNT(*) as total FROM smis');
           const count = countResult[0].total;
           
-          report += `\n📈 *Таблица smis:*\n`;
+          report += `\n📈 Таблица smis:\n`;
           report += `• Записей: ${count}\n`;
           
           if (count > 0) {
@@ -634,7 +634,7 @@ class PRBot {
         const csvPath = './smi-import-fixed.csv';
         const csvExists = fs.existsSync(csvPath);
         
-        report += `\n📁 *CSV ФАЙЛ:*\n`;
+        report += `\n📁 CSV ФАЙЛ:\n`;
         report += `• Наличие: ${csvExists ? '✅ Найден' : '❌ Не найден'}\n`;
         
         if (csvExists) {
@@ -650,28 +650,29 @@ class PRBot {
         }
         
         // 5. Проверяем переменные окружения
-        report += `\n⚙️ *ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ:*\n`;
+        report += `\n⚙️ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ:\n`;
         report += `• DATABASE_URL: ${process.env.DATABASE_URL ? '✅ Настроен' : '❌ Не настроен'}\n`;
         report += `• BOT_TOKEN: ${process.env.BOT_TOKEN ? '✅ Настроен' : '❌ Не настроен'}\n`;
         
-        report += `\n⏰ *Последняя проверка:* ${new Date().toLocaleString()}`;
+        report += `\n⏰ Последняя проверка: ${new Date().toLocaleString()}`;
         
-        await this.bot.sendMessage(chatId, report, { parse_mode: 'Markdown' });
+        // Отправляем БЕЗ parse_mode: 'Markdown' - это ключевое!
+        await this.bot.sendMessage(chatId, report);
         
       } catch (error) {
+        // Также отправляем сообщение об ошибке без parse_mode
         await this.bot.sendMessage(chatId, 
-          `❌ *ОШИБКА ПРОВЕРКИ СИСТЕМЫ:*\n\n` +
-          `*Сообщение ошибки:* ${error.message}\n\n` +
-          `*DATABASE_URL:* ${process.env.DATABASE_URL ? '✅ Настроен' : '❌ Не настроен'}\n\n` +
-          `*Возможные причины:*\n` +
+          `❌ ОШИБКА ПРОВЕРКИ СИСТЕМЫ:\n\n` +
+          `Сообщение ошибки: ${error.message}\n\n` +
+          `DATABASE_URL: ${process.env.DATABASE_URL ? '✅ Настроен' : '❌ Не настроен'}\n\n` +
+          `Возможные причины:\n` +
           `1. DATABASE_URL не настроен в Render Environment\n` +
           `2. База данных недоступна или перезагружается\n` +
           `3. Проблемы с сетевым подключением\n\n` +
-          `*Что делать:*\n` +
+          `Что делать:\n` +
           `1. Проверьте статус базы данных на Render\n` +
           `2. Убедитесь что DATABASE_URL правильный\n` +
-          `3. Попробуйте команду /initdb для создания таблиц`,
-          { parse_mode: 'Markdown' }
+          `3. Попробуйте команду /initdb для создания таблиц`
         );
       }
     });
