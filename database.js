@@ -44,12 +44,12 @@ const User = sequelize.define('User', {
     unique: true,
     allowNull: false
   },
-  username: DataTypes.STRING,
-  firstName: DataTypes.STRING,
-  lastName: DataTypes.STRING,
-  phone: DataTypes.STRING,
-  email: DataTypes.STRING,
-  company: DataTypes.STRING,
+  username: DataTypes.STRING(100),
+  firstName: DataTypes.STRING(100),
+  lastName: DataTypes.STRING(100),
+  phone: DataTypes.STRING(50),
+  email: DataTypes.STRING(150),
+  company: DataTypes.STRING(200),
   role: {
     type: DataTypes.ENUM('user', 'admin'),
     defaultValue: 'user'
@@ -73,7 +73,7 @@ const User = sequelize.define('User', {
   }
 });
 
-// Модель СМИ
+// Модель СМИ - ИСПРАВЛЕНО: используем TEXT для длинных полей
 const SMI = sequelize.define('SMI', {
   id: {
     type: DataTypes.INTEGER,
@@ -81,24 +81,24 @@ const SMI = sequelize.define('SMI', {
     autoIncrement: true
   },
   name: {
-    type: DataTypes.STRING,
+    type: DataTypes.TEXT, // Вместо STRING используем TEXT для длинных названий
     allowNull: false
   },
   category: {
-    type: DataTypes.STRING,
+    type: DataTypes.TEXT, // TEXT вместо STRING
     allowNull: false
   },
-  country: DataTypes.STRING,
+  country: DataTypes.TEXT, // TEXT вместо STRING
   backdated: {
     type: DataTypes.BOOLEAN,
     defaultValue: false
   },
-  audience: DataTypes.STRING,
-  audienceNumber: DataTypes.INTEGER,
-  contact: DataTypes.STRING,
-  price: DataTypes.INTEGER,
-  description: DataTypes.TEXT,
-  website: DataTypes.STRING,
+  audience: DataTypes.TEXT, // TEXT вместо STRING
+  audienceNumber: DataTypes.BIGINT, // BIGINT для больших чисел
+  contact: DataTypes.TEXT, // TEXT вместо STRING
+  price: DataTypes.BIGINT, // BIGINT для больших сумм
+  description: DataTypes.TEXT, // TEXT для длинных описаний
+  website: DataTypes.TEXT, // TEXT вместо STRING
   isActive: {
     type: DataTypes.BOOLEAN,
     defaultValue: true
@@ -106,7 +106,26 @@ const SMI = sequelize.define('SMI', {
   tags: {
     type: DataTypes.JSON,
     defaultValue: []
-  }
+  },
+  // Дополнительные поля из CSV
+  language: DataTypes.TEXT,
+  mediaType: DataTypes.TEXT,
+  frequency: DataTypes.TEXT,
+  coverage: DataTypes.TEXT,
+  editorialPolicies: DataTypes.TEXT,
+  socialMedia: DataTypes.TEXT,
+  metrics: DataTypes.TEXT,
+  specialFeatures: DataTypes.TEXT
+}, {
+  timestamps: true,
+  tableName: 'smis',
+  indexes: [
+    { fields: ['name'] },
+    { fields: ['category'] },
+    { fields: ['country'] },
+    { fields: ['backdated'] },
+    { fields: ['isActive'] }
+  ]
 });
 
 // Модель премий
@@ -117,17 +136,17 @@ const Award = sequelize.define('Award', {
     autoIncrement: true
   },
   name: {
-    type: DataTypes.STRING,
+    type: DataTypes.TEXT,
     allowNull: false
   },
-  category: DataTypes.STRING,
-  location: DataTypes.STRING,
+  category: DataTypes.TEXT,
+  location: DataTypes.TEXT,
   deadline: DataTypes.DATE,
-  fee: DataTypes.INTEGER,
-  prize: DataTypes.STRING,
+  fee: DataTypes.BIGINT,
+  prize: DataTypes.TEXT,
   description: DataTypes.TEXT,
-  website: DataTypes.STRING,
-  contact: DataTypes.STRING,
+  website: DataTypes.TEXT,
+  contact: DataTypes.TEXT,
   isActive: {
     type: DataTypes.BOOLEAN,
     defaultValue: true
@@ -142,16 +161,16 @@ const Jury = sequelize.define('Jury', {
     autoIncrement: true
   },
   name: {
-    type: DataTypes.STRING,
+    type: DataTypes.TEXT,
     allowNull: false
   },
-  category: DataTypes.STRING,
-  expertise: DataTypes.STRING,
-  location: DataTypes.STRING,
-  fee: DataTypes.INTEGER,
+  category: DataTypes.TEXT,
+  expertise: DataTypes.TEXT,
+  location: DataTypes.TEXT,
+  fee: DataTypes.BIGINT,
   description: DataTypes.TEXT,
-  contact: DataTypes.STRING,
-  website: DataTypes.STRING,
+  contact: DataTypes.TEXT,
+  website: DataTypes.TEXT,
   isActive: {
     type: DataTypes.BOOLEAN,
     defaultValue: true
@@ -166,16 +185,16 @@ const Association = sequelize.define('Association', {
     autoIncrement: true
   },
   name: {
-    type: DataTypes.STRING,
+    type: DataTypes.TEXT,
     allowNull: false
   },
-  category: DataTypes.STRING,
-  members: DataTypes.INTEGER,
-  location: DataTypes.STRING,
-  fee: DataTypes.INTEGER,
+  category: DataTypes.TEXT,
+  members: DataTypes.BIGINT,
+  location: DataTypes.TEXT,
+  fee: DataTypes.BIGINT,
   benefits: DataTypes.TEXT,
-  contact: DataTypes.STRING,
-  website: DataTypes.STRING,
+  contact: DataTypes.TEXT,
+  website: DataTypes.TEXT,
   isActive: {
     type: DataTypes.BOOLEAN,
     defaultValue: true
@@ -190,7 +209,7 @@ const SearchQuery = sequelize.define('SearchQuery', {
     autoIncrement: true
   },
   userId: DataTypes.INTEGER,
-  type: DataTypes.STRING,
+  type: DataTypes.STRING(50),
   filters: DataTypes.JSON,
   resultsCount: DataTypes.INTEGER,
   createdAt: {
@@ -221,6 +240,28 @@ async function initDatabase() {
     return true;
   } catch (error) {
     console.error('❌ Ошибка инициализации базы данных:', error);
+    return false;
+  }
+}
+
+// УДАЛЕНИЕ и пересоздание таблицы smis с правильными типами
+async function recreateSMITable() {
+  try {
+    console.log('🔄 Пересоздаю таблицу smis с правильными типами...');
+    
+    // Удаляем таблицу если существует
+    await sequelize.query('DROP TABLE IF EXISTS smis CASCADE');
+    
+    // Ждем немного
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Создаем таблицу заново
+    await sequelize.sync({ force: true });
+    
+    console.log('✅ Таблица smis пересоздана с типами TEXT');
+    return true;
+  } catch (error) {
+    console.error('❌ Ошибка пересоздания таблицы:', error);
     return false;
   }
 }
@@ -349,6 +390,7 @@ async function importSMIFromCSV(filePath) {
     fs.createReadStream(filePath)
       .pipe(csv())
       .on('data', (row) => {
+        // Парсим все возможные поля из CSV
         const record = {
           name: row.name ? row.name.trim() : '',
           category: row.category ? row.category.trim() : '',
@@ -360,9 +402,19 @@ async function importSMIFromCSV(filePath) {
           price: parseInt(row.price || '0') || 0,
           description: row.description ? row.description.trim() : '',
           website: row.website ? row.website.trim() : '',
-          isActive: true
+          isActive: true,
+          // Дополнительные поля
+          language: row.language ? row.language.trim() : '',
+          mediaType: row.mediaType ? row.mediaType.trim() : '',
+          frequency: row.frequency ? row.frequency.trim() : '',
+          coverage: row.coverage ? row.coverage.trim() : '',
+          editorialPolicies: row.editorialPolicies ? row.editorialPolicies.trim() : '',
+          socialMedia: row.socialMedia ? row.socialMedia.trim() : '',
+          metrics: row.metrics ? row.metrics.trim() : '',
+          specialFeatures: row.specialFeatures ? row.specialFeatures.trim() : ''
         };
         
+        // Конвертируем аудиторию если нужно
         if (!row.audienceNumber && row.audience) {
           const audienceStr = row.audience.toString().toUpperCase();
           if (audienceStr.includes('M') || audienceStr.includes('М')) {
@@ -382,27 +434,41 @@ async function importSMIFromCSV(filePath) {
         try {
           let importedCount = 0;
           let updatedCount = 0;
+          let errorCount = 0;
           
-          for (const record of smiRecords) {
-            const existing = await SMI.findOne({ 
-              where: { name: record.name } 
-            });
+          // Вставляем пакетами по 1000 записей
+          const batchSize = 1000;
+          for (let i = 0; i < smiRecords.length; i += batchSize) {
+            const batch = smiRecords.slice(i, i + batchSize);
             
-            if (existing) {
-              await existing.update(record);
-              updatedCount++;
-            } else {
-              await SMI.create(record);
-              importedCount++;
+            try {
+              await SMI.bulkCreate(batch, {
+                updateOnDuplicate: ['category', 'country', 'audience', 'audienceNumber', 'contact', 'price', 'description', 'website', 'backdated']
+              });
+              
+              importedCount += batch.length;
+              console.log(`📦 Пакет ${Math.floor(i/batchSize) + 1}/${Math.ceil(smiRecords.length/batchSize)}: добавлено ${batch.length} записей`);
+            } catch (batchError) {
+              console.error(`❌ Ошибка в пакете ${Math.floor(i/batchSize) + 1}:`, batchError.message);
+              errorCount += batch.length;
             }
           }
+          
+          const totalInDb = await SMI.count();
           
           console.log(`📊 Импорт завершен:`);
           console.log(`   ✅ Добавлено новых: ${importedCount}`);
           console.log(`   🔄 Обновлено существующих: ${updatedCount}`);
-          console.log(`   📈 Всего в базе: ${await SMI.count()} записей`);
+          console.log(`   ❌ Ошибок: ${errorCount}`);
+          console.log(`   📈 Всего в базе: ${totalInDb} записей`);
           
-          resolve({ imported: importedCount, updated: updatedCount, total: smiRecords.length });
+          resolve({ 
+            imported: importedCount, 
+            updated: updatedCount, 
+            errors: errorCount,
+            total: smiRecords.length,
+            totalInDb: totalInDb
+          });
         } catch (error) {
           console.error('❌ Ошибка при сохранении в базу:', error);
           reject(error);
@@ -420,7 +486,8 @@ async function exportSMIToCSV(filePath) {
   try {
     const allSMI = await SMI.findAll({
       where: { isActive: true },
-      order: [['category', 'ASC'], ['name', 'ASC']]
+      order: [['category', 'ASC'], ['name', 'ASC']],
+      limit: 100000 // Ограничение на экспорт
     });
     
     if (allSMI.length === 0) {
@@ -428,13 +495,20 @@ async function exportSMIToCSV(filePath) {
       return false;
     }
     
-    const headers = ['name', 'category', 'country', 'backdated', 'audience', 'audienceNumber', 'contact', 'price', 'description', 'website'];
+    const headers = [
+      'name', 'category', 'country', 'backdated', 
+      'audience', 'audienceNumber', 'contact', 'price', 
+      'description', 'website', 'language', 'mediaType',
+      'frequency', 'coverage', 'editorialPolicies', 
+      'socialMedia', 'metrics', 'specialFeatures'
+    ];
+    
     let csvContent = headers.join(',') + '\n';
     
     allSMI.forEach(smi => {
       const row = [
-        `"${smi.name.replace(/"/g, '""')}"`,
-        `"${smi.category.replace(/"/g, '""')}"`,
+        `"${smi.name ? smi.name.replace(/"/g, '""') : ''}"`,
+        `"${smi.category ? smi.category.replace(/"/g, '""') : ''}"`,
         `"${smi.country ? smi.country.replace(/"/g, '""') : ''}"`,
         smi.backdated ? 'true' : 'false',
         `"${smi.audience ? smi.audience.replace(/"/g, '""') : ''}"`,
@@ -442,7 +516,15 @@ async function exportSMIToCSV(filePath) {
         `"${smi.contact ? smi.contact.replace(/"/g, '""') : ''}"`,
         smi.price || 0,
         `"${smi.description ? smi.description.replace(/"/g, '""') : ''}"`,
-        `"${smi.website ? smi.website.replace(/"/g, '""') : ''}"`
+        `"${smi.website ? smi.website.replace(/"/g, '""') : ''}"`,
+        `"${smi.language ? smi.language.replace(/"/g, '""') : ''}"`,
+        `"${smi.mediaType ? smi.mediaType.replace(/"/g, '""') : ''}"`,
+        `"${smi.frequency ? smi.frequency.replace(/"/g, '""') : ''}"`,
+        `"${smi.coverage ? smi.coverage.replace(/"/g, '""') : ''}"`,
+        `"${smi.editorialPolicies ? smi.editorialPolicies.replace(/"/g, '""') : ''}"`,
+        `"${smi.socialMedia ? smi.socialMedia.replace(/"/g, '""') : ''}"`,
+        `"${smi.metrics ? smi.metrics.replace(/"/g, '""') : ''}"`,
+        `"${smi.specialFeatures ? smi.specialFeatures.replace(/"/g, '""') : ''}"`
       ];
       
       csvContent += row.join(',') + '\n';
@@ -513,6 +595,16 @@ async function searchSMILikeCSV(filters = {}) {
   return results;
 }
 
+// Функция для удаления и пересоздания таблицы (команда для бота)
+async function fixSMITable() {
+  try {
+    await recreateSMITable();
+    return { success: true, message: 'Таблица smis пересоздана с типами TEXT' };
+  } catch (error) {
+    return { success: false, message: `Ошибка: ${error.message}` };
+  }
+}
+
 // ========== ЭКСПОРТ МОДУЛЯ ==========
 module.exports = {
   sequelize,
@@ -523,6 +615,8 @@ module.exports = {
   Association,
   SearchQuery,
   initDatabase,
+  recreateSMITable,
+  fixSMITable,
   findSMI,
   importSMIFromCSV,
   exportSMIToCSV,
