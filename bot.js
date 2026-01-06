@@ -1,6 +1,6 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const { User, SMI, Award, Jury, Association, SearchQuery, findSMI, importSMIFromCSV, searchSMILikeCSV, initDatabase, Op } = require('./database');
+const { User, SMI, Award, Jury, Association, SearchQuery, findSMI, importSMIFromCSV, searchSMILikeCSV, initDatabase, Op, fixSMITable } = require('./database');
 const keyboards = require('./keyboards');
 const stateManager = require('./states');
 const utils = require('./utils');
@@ -282,6 +282,39 @@ class PRBot {
       } catch (error) {
         console.error('Ошибка импорта CSV:', error);
         await this.bot.sendMessage(chatId, `❌ Ошибка импорта: ${error.message}`);
+      }
+    });
+
+    // Команда /fixtable - пересоздание таблицы с TEXT типами
+    this.bot.onText(/\/fixtable/, async (msg) => {
+      const chatId = msg.chat.id;
+      
+      if (!this.isAdmin(chatId)) {
+        await this.bot.sendMessage(chatId, '⛔ Только для администраторов');
+        return;
+      }
+      
+      try {
+        await this.bot.sendMessage(chatId, '🔄 Пересоздаю таблицу smis с типами TEXT...');
+        
+        // Используем функцию fixSMITable из database.js
+        const result = await fixSMITable();
+        
+        if (result.success) {
+          await this.bot.sendMessage(chatId, 
+            '🎉 *ТАБЛИЦА ПЕРЕСОЗДАНА!*\n\n' +
+            'Теперь импортируйте данные:\n' +
+            '`/csv_import` - загрузит 103,000 СМИ из CSV\n\n' +
+            'Ошибка "value too long" будет исправлена!',
+            { parse_mode: 'Markdown' }
+          );
+        } else {
+          await this.bot.sendMessage(chatId, `❌ Ошибка: ${result.message}`);
+        }
+        
+      } catch (error) {
+        console.error('Ошибка пересоздания таблицы:', error);
+        await this.bot.sendMessage(chatId, `❌ Ошибка: ${error.message}`);
       }
     });
     
@@ -1336,6 +1369,7 @@ class PRBot {
   // Показать популярные категории
   async showPopularCategories(chatId) {
     try {
+      const Sequelize = require('sequelize');
       const categories = await SMI.findAll({
         attributes: ['category'],
         group: ['category'],
