@@ -1,6 +1,6 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const { User, SMI, Award, Jury, Association, SearchQuery, findSMI, importSMIFromCSV, searchSMILikeCSV, initDatabase } = require('./database');
+const { User, SMI, Award, Jury, Association, SearchQuery, findSMI, importSMIFromCSV, searchSMILikeCSV, initDatabase, Op } = require('./database');
 const keyboards = require('./keyboards');
 const stateManager = require('./states');
 const utils = require('./utils');
@@ -38,6 +38,7 @@ class PRBot {
     
     this.initHandlers();
     this.initCSVCommands(); // Добавляем CSV команды
+    this.initQuickSearch(); // Добавляем быстрый поиск
   }
   
   // Метод для запуска через вебхук
@@ -118,6 +119,36 @@ class PRBot {
       }
     });
     
+    // Команда /quick
+    this.bot.onText(/\/quick/, async (msg) => {
+      const chatId = msg.chat.id;
+      await this.showQuickSearchMenu(chatId);
+    });
+    
+    // Команда /price
+    this.bot.onText(/\/price/, async (msg) => {
+      const chatId = msg.chat.id;
+      
+      stateManager.updateState(chatId, {
+        currentSection: 'smi',
+        step: 'price_menu'
+      });
+      
+      await this.bot.sendMessage(chatId, '💵 *ФИЛЬТРАЦИЯ ПО ЦЕНЕ*\n\nВыберите ценовой диапазон:', {
+        parse_mode: 'Markdown',
+        ...keyboards.getPriceOptions ? keyboards.getPriceOptions() : {
+          reply_markup: {
+            keyboard: [
+              ['💰 До 50K руб.', '💰 50K-100K руб.'],
+              ['💰 100K-200K руб.', '💎 200K+ руб.'],
+              ['⬅️ НАЗАД', '🏠 Главное меню']
+            ],
+            resize_keyboard: true
+          }
+        }
+      });
+    });
+    
     // Обработка текстовых сообщений
     this.bot.on('message', async (msg) => {
       const chatId = msg.chat.id;
@@ -169,6 +200,10 @@ class PRBot {
       // Раздел личного кабинета
       else if (userState.currentSection === 'profile') {
         await this.handleProfile(chatId, text, userState);
+      }
+      // Быстрый поиск
+      else if (userState.currentSection === 'quick_search') {
+        await this.handleQuickSearch(chatId, text, userState);
       }
     });
     
@@ -392,23 +427,23 @@ class PRBot {
         
         switch(text) {
           case '🔍 Бизнес-СМИ':
-            filters.category = 'Бизнес';
+            filters.category = 'Business';
             filterName = 'бизнес-СМИ';
             break;
           case '💻 IT-СМИ':
-            filters.category = 'IT';
+            filters.category = 'Technology';
             filterName = 'IT-СМИ';
             break;
           case '📰 Новостные':
-            filters.category = 'Новости';
+            filters.category = 'News';
             filterName = 'новостные СМИ';
             break;
           case '🇷🇺 Российские':
-            filters.country = 'Россия';
+            filters.country = 'Russia';
             filterName = 'российские СМИ';
             break;
           case '🌍 Международные':
-            filters.country = 'США';
+            filters.country = 'USA';
             filterName = 'международные СМИ';
             break;
           case '💰 До 100к':
@@ -478,6 +513,31 @@ class PRBot {
     });
   }
   
+  // Инициализация быстрого поиска
+  initQuickSearch() {
+    // Обработка кнопок быстрого поиска
+    this.bot.on('message', async (msg) => {
+      const chatId = msg.chat.id;
+      const text = msg.text;
+      
+      if (text.startsWith('/')) return;
+      
+      const userState = stateManager.getState(chatId);
+      
+      // Обработка кнопок быстрого поиска
+      const quickSearchButtons = [
+        '🔥 ТОП Business', '🔥 ТОП Technology',
+        '🇷🇺 Российские СМИ', '🌍 Международные',
+        '💰 Бюджетные СМИ', '👥 Крупная аудитория',
+        '🔍 Расширенный поиск', '🎯 Рекомендации'
+      ];
+      
+      if (quickSearchButtons.includes(text) && userState.currentSection === 'smi') {
+        await this.handleQuickSearch(chatId, text, userState);
+      }
+    });
+  }
+  
   // Регистрация пользователя
   async registerUser(msg) {
     const { id, username, first_name, last_name } = msg.from;
@@ -530,14 +590,22 @@ class PRBot {
         break;
         
       case '📰 ПОДОБРАТЬ СМИ':
+        // Новый вариант: предлагаем выбор между быстрым и расширенным поиском
         stateManager.updateState(chatId, {
           currentSection: 'smi',
-          step: 'category'
+          step: 'search_type'
         });
-        await this.bot.sendMessage(chatId, '📌 *ВЫБЕРИТЕ НАПРАВЛЕНИЕ ДЕЯТЕЛЬНОСТИ:*', {
-          parse_mode: 'Markdown',
-          ...keyboards.getSMICategories()
-        });
+        
+        await this.bot.sendMessage(chatId, 
+          '📰 *ПОДБОР СМИ*\n\n' +
+          'Выберите тип поиска:\n\n' +
+          '⚡ *Быстрый поиск* - популярные фильтры\n' +
+          '🔍 *Расширенный поиск* - точная настройка',
+          {
+            parse_mode: 'Markdown',
+            ...this.getSearchTypeMenu()
+          }
+        );
         break;
         
       case '🏆 ПРЕМИИ':
@@ -586,14 +654,54 @@ class PRBot {
     }
   }
   
+  // Меню выбора типа поиска
+  getSearchTypeMenu() {
+    return {
+      reply_markup: {
+        keyboard: [
+          ['⚡ Быстрый поиск', '🔍 Расширенный поиск'],
+          ['⬅️ НАЗАД', '🏠 ГЛАВНОЕ МЕНЮ']
+        ],
+        resize_keyboard: true
+      }
+    };
+  }
+  
   // Обработка потока СМИ
   async handleSMIFlow(chatId, text, state) {
     switch(state.step) {
-      case 'category':
-        if (text === '⬅️ НАЗАД') {
+      case 'search_type':
+        if (text === '⬅️ НАЗАД' || text === '🏠 ГЛАВНОЕ МЕНЮ') {
           stateManager.resetState(chatId);
           await this.bot.sendMessage(chatId, 'Главное меню:', 
             keyboards.getMainMenu(this.isAdmin(chatId)));
+          return;
+        }
+        
+        if (text === '⚡ Быстрый поиск') {
+          stateManager.updateState(chatId, { step: 'quick_menu' });
+          await this.showQuickSearchMenu(chatId);
+          return;
+        }
+        
+        if (text === '🔍 Расширенный поиск') {
+          stateManager.updateState(chatId, { step: 'category' });
+          await this.bot.sendMessage(chatId, '📌 *ВЫБЕРИТЕ НАПРАВЛЕНИЕ ДЕЯТЕЛЬНОСТИ:*', {
+            parse_mode: 'Markdown',
+            ...keyboards.getSMICategories()
+          });
+          return;
+        }
+        break;
+        
+      case 'quick_menu':
+        await this.handleQuickSearch(chatId, text, state);
+        break;
+        
+      case 'category':
+        if (text === '⬅️ НАЗАД') {
+          stateManager.updateState(chatId, { step: 'search_type' });
+          await this.bot.sendMessage(chatId, 'Выберите тип поиска:', this.getSearchTypeMenu());
           return;
         }
         if (text === '🏠 ГЛАВНОЕ МЕНЮ') {
@@ -603,10 +711,50 @@ class PRBot {
           return;
         }
         
-        stateManager.setFilter(chatId, 'category', text.replace(/^[^\s]+\s/, ''));
+        // Обработка кнопок "Все категории" и "Популярные"
+        if (text === '🔍 Все категории') {
+          await this.bot.sendMessage(chatId, 
+            '📝 Введите название категории для поиска:\n(например: Business, Technology, News)',
+            {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                keyboard: [['⬅️ НАЗАД']],
+                resize_keyboard: true
+              }
+            }
+          );
+          stateManager.updateState(chatId, { step: 'custom_category' });
+          return;
+        }
+        
+        if (text === '⭐ Популярные') {
+          // Показываем популярные категории
+          await this.showPopularCategories(chatId);
+          return;
+        }
+        
+        // Убираем эмодзи из текста категории
+        const category = text.replace(/^[^\w\s]+\s/, '');
+        stateManager.setFilter(chatId, 'category', category);
         stateManager.updateState(chatId, { step: 'country' });
         
         await this.bot.sendMessage(chatId, '🌍 *ВЫБЕРИТЕ СТРАНУ:*\n\nИли введите название страны вручную:', {
+          parse_mode: 'Markdown',
+          ...keyboards.getCountries()
+        });
+        break;
+        
+      case 'custom_category':
+        if (text === '⬅️ НАЗАД') {
+          stateManager.updateState(chatId, { step: 'category' });
+          await this.bot.sendMessage(chatId, 'Выберите категорию:', keyboards.getSMICategories());
+          return;
+        }
+        
+        stateManager.setFilter(chatId, 'category', text);
+        stateManager.updateState(chatId, { step: 'country' });
+        
+        await this.bot.sendMessage(chatId, '🌍 *ВЫБЕРИТЕ СТРАНУ:*', {
           parse_mode: 'Markdown',
           ...keyboards.getCountries()
         });
@@ -625,12 +773,55 @@ class PRBot {
           return;
         }
         
+        // Обработка кнопок "Все страны" и "Другая страна"
+        if (text === '🌍 Все страны' || text === '🌎 Не важно') {
+          stateManager.setFilter(chatId, 'country', '');
+          stateManager.updateState(chatId, { step: 'backdated' });
+          await this.bot.sendMessage(chatId, '📅 *ЗАДНИЕ ЧИСЛА (BACKDATED)*\n\nНужны ли публикации задним числом?', {
+            parse_mode: 'Markdown',
+            ...keyboards.getBackdatedOptions()
+          });
+          return;
+        }
+        
+        if (text === '🌏 Другая страна') {
+          await this.bot.sendMessage(chatId, 
+            '🌍 Введите название страны:\n(например: Germany, France, Japan)',
+            {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                keyboard: [['⬅️ НАЗАД']],
+                resize_keyboard: true
+              }
+            }
+          );
+          stateManager.updateState(chatId, { step: 'custom_country' });
+          return;
+        }
+        
         let country = text;
+        // Убираем флаг эмодзи
         if (text.includes(' ')) {
-          country = text.split(' ')[1];
+          country = text.split(' ').slice(1).join(' ');
         }
         
         stateManager.setFilter(chatId, 'country', country);
+        stateManager.updateState(chatId, { step: 'backdated' });
+        
+        await this.bot.sendMessage(chatId, '📅 *ЗАДНИЕ ЧИСЛА (BACKDATED)*\n\nНужны ли публикации задним числом?', {
+          parse_mode: 'Markdown',
+          ...keyboards.getBackdatedOptions()
+        });
+        break;
+        
+      case 'custom_country':
+        if (text === '⬅️ НАЗАД') {
+          stateManager.updateState(chatId, { step: 'country' });
+          await this.bot.sendMessage(chatId, 'Выберите страну:', keyboards.getCountries());
+          return;
+        }
+        
+        stateManager.setFilter(chatId, 'country', text);
         stateManager.updateState(chatId, { step: 'backdated' });
         
         await this.bot.sendMessage(chatId, '📅 *ЗАДНИЕ ЧИСЛА (BACKDATED)*\n\nНужны ли публикации задним числом?', {
@@ -653,9 +844,9 @@ class PRBot {
         }
         
         let backdatedValue = null;
-        if (text.includes('Да')) backdatedValue = 'Да';
-        else if (text.includes('Нет')) backdatedValue = 'Нет';
-        else if (text.includes('Не важно')) backdatedValue = 'Не важно';
+        if (text.includes('Да')) backdatedValue = true;
+        else if (text.includes('Нет')) backdatedValue = false;
+        else if (text.includes('Не важно')) backdatedValue = null;
         
         stateManager.setFilter(chatId, 'backdated', backdatedValue);
         stateManager.updateState(chatId, { step: 'audience' });
@@ -679,11 +870,568 @@ class PRBot {
           return;
         }
         
-        stateManager.setFilter(chatId, 'audience', text);
+        // Обработка улучшенных опций аудитории
+        let audienceFilter = {};
+        
+        if (text.includes('Малая')) audienceFilter = { min: 0, max: 100000 };
+        else if (text.includes('Средняя')) audienceFilter = { min: 100000, max: 500000 };
+        else if (text.includes('Крупная')) audienceFilter = { min: 500000, max: 1000000 };
+        else if (text.includes('Очень крупная')) audienceFilter = { min: 1000000, max: 5000000 };
+        else if (text.includes('Премиум')) audienceFilter = { min: 5000000, max: null };
+        else if (text.includes('Любая')) audienceFilter = { min: 0, max: null };
+        else if (text.includes('ТОП')) {
+          // ТОП по аудитории - покажем самые популярные СМИ
+          await this.showTopByAudience(chatId);
+          return;
+        }
+        else if (text.includes('Эконом')) {
+          // Эконом-сегмент - малая аудитория
+          audienceFilter = { min: 0, max: 100000 };
+        }
+        
+        stateManager.setFilter(chatId, 'audience', audienceFilter);
+        
+        // Теперь спросим про цену
+        stateManager.updateState(chatId, { step: 'price' });
+        
+        // Используем улучшенное меню цены, если оно есть
+        const priceMenu = keyboards.getPriceOptions ? keyboards.getPriceOptions() : {
+          reply_markup: {
+            keyboard: [
+              ['💰 До 50K руб.', '💰 50K-100K руб.'],
+              ['💰 100K-200K руб.', '💎 200K+ руб.'],
+              ['💵 Любая цена', '⬅️ НАЗАД']
+            ],
+            resize_keyboard: true
+          }
+        };
+        
+        await this.bot.sendMessage(chatId, '💵 *ВЫБЕРИТЕ ЦЕНОВОЙ ДИАПАЗОН:*', {
+          parse_mode: 'Markdown',
+          ...priceMenu
+        });
+        break;
+        
+      case 'price':
+        if (text === '⬅️ НАЗАД') {
+          stateManager.updateState(chatId, { step: 'audience' });
+          await this.bot.sendMessage(chatId, 'Выберите охват аудитории:', keyboards.getAudienceOptions());
+          return;
+        }
+        if (text === '🏠 ГЛАВНОЕ МЕНЮ') {
+          stateManager.resetState(chatId);
+          await this.bot.sendMessage(chatId, 'Главное меню:', 
+            keyboards.getMainMenu(this.isAdmin(chatId)));
+          return;
+        }
+        
+        // Обработка ценовых фильтров
+        let priceFilter = {};
+        
+        if (text.includes('До 50K')) priceFilter = { max: 50000 };
+        else if (text.includes('50K-100K')) priceFilter = { min: 50000, max: 100000 };
+        else if (text.includes('100K-200K')) priceFilter = { min: 100000, max: 200000 };
+        else if (text.includes('200K+')) priceFilter = { min: 200000, max: null };
+        else if (text.includes('Любая')) priceFilter = { min: 0, max: null };
+        else if (text.includes('дешевые')) {
+          // Сортировка по цене (возрастание)
+          stateManager.setFilter(chatId, 'sortBy', 'price_asc');
+        } else if (text.includes('дорогие')) {
+          // Сортировка по цене (убывание)
+          stateManager.setFilter(chatId, 'sortBy', 'price_desc');
+        }
+        
+        if (Object.keys(priceFilter).length > 0) {
+          stateManager.setFilter(chatId, 'price', priceFilter);
+        }
         
         await this.performSMISearch(chatId);
         break;
+        
+      case 'price_menu':
+        // Отдельное меню для фильтрации по цене
+        if (text === '⬅️ НАЗАД') {
+          stateManager.resetState(chatId);
+          await this.bot.sendMessage(chatId, 'Главное меню:', 
+            keyboards.getMainMenu(this.isAdmin(chatId)));
+          return;
+        }
+        
+        let priceFilter2 = {};
+        
+        if (text.includes('До 50K')) priceFilter2 = { max: 50000 };
+        else if (text.includes('50K-100K')) priceFilter2 = { min: 50000, max: 100000 };
+        else if (text.includes('100K-200K')) priceFilter2 = { min: 100000, max: 200000 };
+        else if (text.includes('200K+')) priceFilter2 = { min: 200000, max: null };
+        else if (text.includes('Любая')) priceFilter2 = { min: 0, max: null };
+        
+        if (Object.keys(priceFilter2).length > 0) {
+          stateManager.setFilter(chatId, 'price', priceFilter2);
+          await this.performPriceSearch(chatId, priceFilter2);
+        }
+        break;
     }
+  }
+  
+  // Показать меню быстрого поиска
+  async showQuickSearchMenu(chatId) {
+    const quickMenu = keyboards.getQuickSearchMenu ? keyboards.getQuickSearchMenu() : {
+      reply_markup: {
+        keyboard: [
+          ['🔥 ТОП Business', '🔥 ТОП Technology'],
+          ['🇷🇺 Российские СМИ', '🌍 Международные'],
+          ['💰 Бюджетные СМИ', '👥 Крупная аудитория'],
+          ['🔍 Расширенный поиск', '🎯 Рекомендации'],
+          ['⬅️ НАЗАД', '🏠 Главное меню']
+        ],
+        resize_keyboard: true
+      }
+    };
+    
+    await this.bot.sendMessage(chatId, 
+      '⚡ *БЫСТРЫЙ ПОИСК СМИ*\n\n' +
+      'Выберите популярный фильтр:',
+      {
+        parse_mode: 'Markdown',
+        ...quickMenu
+      }
+    );
+  }
+  
+  // Обработка быстрого поиска
+  async handleQuickSearch(chatId, text, state) {
+    if (text === '⬅️ НАЗАД') {
+      stateManager.updateState(chatId, { step: 'search_type' });
+      await this.bot.sendMessage(chatId, 'Выберите тип поиска:', this.getSearchTypeMenu());
+      return;
+    }
+    
+    if (text === '🏠 ГЛАВНОЕ МЕНЮ') {
+      stateManager.resetState(chatId);
+      await this.bot.sendMessage(chatId, 'Главное меню:', 
+        keyboards.getMainMenu(this.isAdmin(chatId)));
+      return;
+    }
+    
+    if (text === '🔍 Расширенный поиск') {
+      stateManager.updateState(chatId, { step: 'category' });
+      await this.bot.sendMessage(chatId, '📌 Выберите категорию:', keyboards.getSMICategories());
+      return;
+    }
+    
+    if (text === '🎯 Рекомендации') {
+      await this.showRecommendations(chatId);
+      return;
+    }
+    
+    const loadingMsg = await this.bot.sendMessage(chatId, '⚡ Ищу по быстрому фильтру...', {
+      parse_mode: 'Markdown'
+    });
+    
+    try {
+      let filters = {};
+      let searchTitle = '';
+      
+      // Определяем фильтры по выбранной кнопке
+      switch(text) {
+        case '🔥 ТОП Business':
+          filters = { category: 'Business', sortBy: 'audience_desc' };
+          searchTitle = 'ТОП Business СМИ';
+          break;
+        case '🔥 ТОП Technology':
+          filters = { category: 'Technology', sortBy: 'audience_desc' };
+          searchTitle = 'ТОП Technology СМИ';
+          break;
+        case '🇷🇺 Российские СМИ':
+          filters = { country: 'Russia', sortBy: 'audience_desc' };
+          searchTitle = 'Российские СМИ';
+          break;
+        case '🌍 Международные':
+          filters = { country: 'United States', sortBy: 'audience_desc' };
+          searchTitle = 'Международные СМИ';
+          break;
+        case '💰 Бюджетные СМИ':
+          filters = { maxPrice: 50000, sortBy: 'price_asc' };
+          searchTitle = 'Бюджетные СМИ (до 50K руб.)';
+          break;
+        case '👥 Крупная аудитория':
+          filters = { minAudience: 1000000, sortBy: 'audience_desc' };
+          searchTitle = 'СМИ с крупной аудиторией (1M+)';
+          break;
+      }
+      
+      if (Object.keys(filters).length > 0) {
+        const results = await this.findSMIByFilters(filters);
+        
+        await this.bot.deleteMessage(chatId, loadingMsg.message_id);
+        
+        if (results.length === 0) {
+          await this.bot.sendMessage(chatId, 
+            `😔 *По фильтру "${text}" ничего не найдено.*\n\n` +
+            'Попробуйте другой фильтр или расширенный поиск.',
+            {
+              parse_mode: 'Markdown',
+              ...this.getQuickSearchMenu()
+            }
+          );
+          return;
+        }
+        
+        const searchId = stateManager.saveSearchResults(chatId, results);
+        await this.showQuickResults(chatId, searchId, 1, searchTitle);
+      }
+      
+    } catch (error) {
+      console.error('Ошибка быстрого поиска:', error);
+      await this.bot.deleteMessage(chatId, loadingMsg.message_id);
+      await this.bot.sendMessage(chatId, '⚠️ Ошибка поиска. Попробуйте позже.');
+    }
+  }
+  
+  // Улучшенный метод поиска СМИ с фильтрами
+  async findSMIByFilters(filters) {
+    try {
+      let where = {};
+      
+      // Категория
+      if (filters.category) {
+        where.category = { [Op.like]: `%${filters.category}%` };
+      }
+      
+      // Страна
+      if (filters.country) {
+        where.country = { [Op.like]: `%${filters.country}%` };
+      }
+      
+      // Цена
+      if (filters.maxPrice) {
+        where.price = { [Op.lte]: filters.maxPrice };
+      }
+      if (filters.minPrice) {
+        where.price = { ...where.price, [Op.gte]: filters.minPrice };
+      }
+      
+      // Аудитория
+      if (filters.minAudience) {
+        where.audienceNumber = { [Op.gte]: filters.minAudience };
+      }
+      if (filters.maxAudience) {
+        where.audienceNumber = { ...where.audienceNumber, [Op.lte]: filters.maxAudience };
+      }
+      
+      // Backdated
+      if (filters.backdated !== undefined && filters.backdated !== null) {
+        where.backdated = filters.backdated;
+      }
+      
+      // Сортировка
+      let order = [['audienceNumber', 'DESC']];
+      if (filters.sortBy === 'price_asc') {
+        order = [['price', 'ASC']];
+      } else if (filters.sortBy === 'price_desc') {
+        order = [['price', 'DESC']];
+      } else if (filters.sortBy === 'name') {
+        order = [['name', 'ASC']];
+      }
+      
+      const results = await SMI.findAll({
+        where: where,
+        order: order,
+        limit: 50
+      });
+      
+      return results;
+      
+    } catch (error) {
+      console.error('Ошибка поиска с фильтрами:', error);
+      return [];
+    }
+  }
+  
+  // Поиск СМИ по цене
+  async performPriceSearch(chatId, priceFilter) {
+    try {
+      const searchMsg = await this.bot.sendMessage(chatId, '💰 Ищу СМИ по цене...', {
+        parse_mode: 'Markdown'
+      });
+      
+      let where = {};
+      
+      if (priceFilter.max) {
+        where.price = { [Op.lte]: priceFilter.max };
+      }
+      if (priceFilter.min) {
+        where.price = { ...where.price, [Op.gte]: priceFilter.min };
+      }
+      
+      const results = await SMI.findAll({
+        where: where,
+        order: [['audienceNumber', 'DESC']],
+        limit: 50
+      });
+      
+      await this.bot.deleteMessage(chatId, searchMsg.message_id);
+      
+      if (results.length === 0) {
+        const priceRange = priceFilter.max ? 
+          `до ${priceFilter.max.toLocaleString()} руб.` : 
+          `от ${priceFilter.min?.toLocaleString()} руб.`;
+        
+        await this.bot.sendMessage(chatId, 
+          `😔 *СМИ в диапазоне ${priceRange} не найдены.*\n\n` +
+          'Попробуйте изменить ценовой диапазон.',
+          {
+            parse_mode: 'Markdown',
+            ...keyboards.getMainMenu(this.isAdmin(chatId))
+          }
+        );
+        stateManager.resetState(chatId);
+        return;
+      }
+      
+      const searchId = stateManager.saveSearchResults(chatId, results);
+      const priceRange = priceFilter.max ? 
+        `до ${priceFilter.max.toLocaleString()} руб.` : 
+        `от ${priceFilter.min?.toLocaleString()} руб.`;
+      
+      await this.showQuickResults(chatId, searchId, 1, `СМИ ${priceRange}`);
+      
+    } catch (error) {
+      console.error('Ошибка поиска по цене:', error);
+      await this.bot.sendMessage(chatId, '⚠️ Ошибка поиска. Попробуйте позже.');
+    }
+  }
+  
+  // Показать популярные категории
+  async showPopularCategories(chatId) {
+    try {
+      const categories = await SMI.findAll({
+        attributes: ['category'],
+        group: ['category'],
+        order: [[Sequelize.fn('COUNT', Sequelize.col('category')), 'DESC']],
+        limit: 10
+      });
+      
+      let message = '⭐ *ПОПУЛЯРНЫЕ КАТЕГОРИИ:*\n\n';
+      
+      categories.forEach((cat, index) => {
+        const emoji = keyboards.getCategoryEmoji ? keyboards.getCategoryEmoji(cat.category) : '📋';
+        message += `${index + 1}. ${emoji} ${cat.category}\n`;
+      });
+      
+      message += '\nВыберите категорию из списка или введите свою:';
+      
+      await this.bot.sendMessage(chatId, message, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          keyboard: [
+            ['⬅️ НАЗАД'],
+            ...categories.slice(0, 4).map(cat => [{
+              text: `${keyboards.getCategoryEmoji ? keyboards.getCategoryEmoji(cat.category) : '📋'} ${cat.category}`
+            }])
+          ],
+          resize_keyboard: true
+        }
+      });
+      
+    } catch (error) {
+      console.error('Ошибка показа популярных категорий:', error);
+      await this.bot.sendMessage(chatId, '⚠️ Не удалось загрузить популярные категории.');
+    }
+  }
+  
+  // Показать ТОП по аудитории
+  async showTopByAudience(chatId) {
+    try {
+      const searchMsg = await this.bot.sendMessage(chatId, '👑 Ищу СМИ с самой большой аудиторией...', {
+        parse_mode: 'Markdown'
+      });
+      
+      const results = await SMI.findAll({
+        order: [['audienceNumber', 'DESC']],
+        limit: 20
+      });
+      
+      await this.bot.deleteMessage(chatId, searchMsg.message_id);
+      
+      if (results.length === 0) {
+        await this.bot.sendMessage(chatId, '😔 *Не найдено СМИ с информацией об аудитории.*', {
+          parse_mode: 'Markdown',
+          ...keyboards.getMainMenu(this.isAdmin(chatId))
+        });
+        stateManager.resetState(chatId);
+        return;
+      }
+      
+      const searchId = stateManager.saveSearchResults(chatId, results);
+      await this.showQuickResults(chatId, searchId, 1, 'ТОП СМИ по аудитории');
+      
+    } catch (error) {
+      console.error('Ошибка поиска ТОП по аудитории:', error);
+      await this.bot.sendMessage(chatId, '⚠️ Ошибка поиска. Попробуйте позже.');
+    }
+  }
+  
+  // Показать рекомендации
+  async showRecommendations(chatId) {
+    try {
+      const searchMsg = await this.bot.sendMessage(chatId, '🎯 Подбираю рекомендации...', {
+        parse_mode: 'Markdown'
+      });
+      
+      // Получаем несколько вариантов для рекомендаций
+      const recommendations = [];
+      
+      // 1. Популярные бизнес-СМИ
+      const businessSMI = await SMI.findAll({
+        where: { category: { [Op.like]: '%Business%' } },
+        order: [['audienceNumber', 'DESC']],
+        limit: 5
+      });
+      
+      // 2. Бюджетные варианты
+      const budgetSMI = await SMI.findAll({
+        where: { price: { [Op.lte]: 50000 } },
+        order: [['audienceNumber', 'DESC']],
+        limit: 5
+      });
+      
+      // 3. Российские СМИ
+      const russianSMI = await SMI.findAll({
+        where: { country: { [Op.like]: '%Russia%' } },
+        order: [['audienceNumber', 'DESC']],
+        limit: 5
+      });
+      
+      // Объединяем результаты, избегая дубликатов
+      const allSMI = [...businessSMI, ...budgetSMI, ...russianSMI];
+      const uniqueSMI = [];
+      const seenIds = new Set();
+      
+      for (const smi of allSMI) {
+        if (!seenIds.has(smi.id)) {
+          seenIds.add(smi.id);
+          uniqueSMI.push(smi);
+        }
+      }
+      
+      await this.bot.deleteMessage(chatId, searchMsg.message_id);
+      
+      if (uniqueSMI.length === 0) {
+        await this.bot.sendMessage(chatId, 
+          '😔 *Не удалось сформировать рекомендации.*\n\n' +
+          'Попробуйте использовать расширенный поиск.',
+          {
+            parse_mode: 'Markdown',
+            ...this.getQuickSearchMenu()
+          }
+        );
+        return;
+      }
+      
+      const searchId = stateManager.saveSearchResults(chatId, uniqueSMI);
+      await this.showQuickResults(chatId, searchId, 1, 'Рекомендованные СМИ');
+      
+    } catch (error) {
+      console.error('Ошибка рекомендаций:', error);
+      await this.bot.sendMessage(chatId, '⚠️ Ошибка формирования рекомендаций.');
+    }
+  }
+  
+  // Показать улучшенные результаты
+  async showQuickResults(chatId, searchId, page, title) {
+    const pageData = stateManager.getPageResults(searchId, page);
+    
+    let message = `✅ *${title}*\n`;
+    message += `📊 Найдено: ${pageData.totalItems} СМИ\n\n`;
+    
+    pageData.items.forEach((item, index) => {
+      const globalIndex = (page - 1) * 5 + index + 1;
+      
+      const categoryEmoji = keyboards.getCategoryEmoji ? keyboards.getCategoryEmoji(item.category) : '📋';
+      const countryFlag = utils.getCountryFlag(item.country);
+      
+      // Форматирование цены
+      const priceFormatted = item.price ? 
+        `${Math.round(item.price / 1000)}K руб.` : 
+        'цена по запросу';
+      
+      // Форматирование аудитории
+      const audienceFormatted = item.audienceNumber ? 
+        (item.audienceNumber >= 1000000 ? 
+          `${(item.audienceNumber / 1000000).toFixed(1)}M` : 
+          `${Math.round(item.audienceNumber / 1000)}K`) : 
+        'н/д';
+      
+      message += `*${globalIndex}. ${item.name}*\n`;
+      message += `${categoryEmoji} ${item.category || 'Без категории'} | ${countryFlag} ${item.country || 'Не указана'}\n`;
+      message += `👥 ${audienceFormatted} | 💰 ${priceFormatted}\n\n`;
+    });
+    
+    // Получаем ID первого элемента для кнопок
+    const firstItemId = pageData.items[0]?.id;
+    
+    // Используем улучшенную пагинацию
+    const pagination = keyboards.getPagination ? 
+      keyboards.getPagination(page, pageData.totalPages, searchId, firstItemId) :
+      this.getDefaultPagination(page, pageData.totalPages, searchId, firstItemId);
+    
+    if (page === 1) {
+      await this.bot.sendMessage(chatId, message, {
+        parse_mode: 'Markdown',
+        ...pagination
+      });
+    } else {
+      try {
+        await this.bot.editMessageText(message, {
+          chat_id: chatId,
+          message_id: pageData.messageId || undefined,
+          parse_mode: 'Markdown',
+          ...pagination
+        });
+      } catch (error) {
+        await this.bot.sendMessage(chatId, message, {
+          parse_mode: 'Markdown',
+          ...pagination
+        });
+      }
+    }
+  }
+  
+  // Дефолтная пагинация (если keyboards.getPagination не существует)
+  getDefaultPagination(currentPage, totalPages, searchId, itemId = null) {
+    const buttons = [];
+    
+    if (currentPage > 1) {
+      buttons.push({ text: "◀️ Назад", callback_data: `page_${searchId}_${currentPage - 1}` });
+    }
+    
+    buttons.push({ text: `${currentPage}/${totalPages}`, callback_data: 'current' });
+    
+    if (currentPage < totalPages) {
+      buttons.push({ text: "Вперед ▶️", callback_data: `page_${searchId}_${currentPage + 1}` });
+    }
+    
+    const inlineKeyboard = [buttons];
+    
+    if (itemId) {
+      inlineKeyboard.push([
+        { text: "⭐ В избранное", callback_data: `fav_smi_${itemId}` },
+        { text: "📞 Контакты", callback_data: `contact_smi_${itemId}` }
+      ]);
+    }
+    
+    inlineKeyboard.push([
+      { text: "📥 Экспорт в CSV", callback_data: `export_${searchId}` },
+      { text: "🔄 Новый поиск", callback_data: 'new_search' },
+      { text: "🏠 В меню", callback_data: 'main_menu' }
+    ]);
+    
+    return {
+      reply_markup: {
+        inline_keyboard: inlineKeyboard
+      }
+    };
   }
   
   // Поиск СМИ

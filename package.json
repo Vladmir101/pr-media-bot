@@ -18,14 +18,15 @@
     "cheerio": "^1.1.2",
     "cors": "^2.8.5",
     "csv-parser": "^3.2.0",
+    "csv-writer": "^1.6.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "multer": "^2.0.2",
     "node-cache": "^5.1.2",
     "node-telegram-bot-api": "^0.67.0",
-    "sequelize": "^6.37.7",
-    "sqlite3": "^5.1.7",
     "pg": "^8.11.0",
-    "pg-hstore": "^2.3.4"
+    "pg-hstore": "^2.3.4",
+    "sequelize": "^6.37.7",
+    "sqlite3": "^5.1.7"
   }
 }
