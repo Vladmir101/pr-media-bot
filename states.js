@@ -1,88 +1,101 @@
-class UserStateManager {
+class StateManager {
   constructor() {
     this.states = new Map();
-    this.searchResults = new Map();
+    this.searches = new Map();
   }
-  
-  // Инициализация состояния пользователя
-  initState(userId) {
-    const initialState = {
+
+  getState(chatId) {
+    if (!this.states.has(chatId)) {
+      this.states.set(chatId, {
+        currentSection: null,
+        step: null,
+        filters: {},
+        currentSearchId: null,
+        currentPage: 1
+      });
+    }
+    return this.states.get(chatId);
+  }
+
+  updateState(chatId, updates) {
+    const currentState = this.getState(chatId);
+    this.states.set(chatId, { ...currentState, ...updates });
+  }
+
+  setFilter(chatId, key, value) {
+    const state = this.getState(chatId);
+    if (!state.filters) {
+      state.filters = {};
+    }
+    state.filters[key] = value;
+    this.states.set(chatId, state);
+  }
+
+  resetState(chatId) {
+    this.states.set(chatId, {
       currentSection: null,
       step: null,
-      filters: {
-        category: null,
-        country: null,
-        backdated: null,
-        audience: null,
-        type: null
-      },
-      currentPage: 1,
-      searchId: null
-    };
-    
-    this.states.set(userId, initialState);
-    return initialState;
+      filters: {},
+      currentSearchId: null,
+      currentPage: 1
+    });
   }
-  
-  // Получение состояния
-  getState(userId) {
-    if (!this.states.has(userId)) {
-      return this.initState(userId);
-    }
-    return this.states.get(userId);
-  }
-  
-  // Обновление состояния
-  updateState(userId, updates) {
-    const state = this.getState(userId);
-    Object.assign(state, updates);
-    this.states.set(userId, state);
-    return state;
-  }
-  
-  // Сброс состояния
-  resetState(userId) {
-    this.states.delete(userId);
-  }
-  
-  // Сохранение фильтра
-  setFilter(userId, filterName, value) {
-    const state = this.getState(userId);
-    state.filters[filterName] = value;
-    this.states.set(userId, state);
-  }
-  
-  // Сохранение результатов поиска
-  saveSearchResults(userId, results) {
+
+  saveSearchResults(chatId, results) {
     const searchId = Date.now().toString();
-    this.searchResults.set(searchId, results);
-    
-    const state = this.getState(userId);
-    state.searchId = searchId;
-    this.states.set(userId, state);
-    
+    this.searches.set(`${chatId}_${searchId}`, results);
     return searchId;
   }
-  
-  // Получение результатов поиска
-  getSearchResults(searchId) {
-    return this.searchResults.get(searchId) || [];
-  }
-  
-  // Получение страницы результатов
-  getPageResults(searchId, page, pageSize = 5) {
-    const results = this.getSearchResults(searchId);
-    const totalPages = Math.ceil(results.length / pageSize);
-    const startIndex = (page - 1) * pageSize;
-    const endIndex = startIndex + pageSize;
+
+  getSearchResults(searchId, chatId = null) {
+    if (chatId) {
+      return this.searches.get(`${chatId}_${searchId}`);
+    }
     
+    // Ищем по всем чатам
+    for (const [key, results] of this.searches.entries()) {
+      if (key.endsWith(`_${searchId}`)) {
+        return results;
+      }
+    }
+    return null;
+  }
+
+  getPageResults(searchId, page, itemsPerPage = 5) {
+    const results = this.getSearchResults(searchId);
+    if (!results) {
+      return { items: [], totalItems: 0, totalPages: 0 };
+    }
+
+    const totalItems = results.length;
+    const totalPages = Math.ceil(totalItems / itemsPerPage);
+    
+    if (page < 1 || page > totalPages) {
+      page = 1;
+    }
+
+    const startIndex = (page - 1) * itemsPerPage;
+    const endIndex = Math.min(startIndex + itemsPerPage, totalItems);
+    const items = results.slice(startIndex, endIndex);
+
     return {
-      items: results.slice(startIndex, endIndex),
-      page,
+      items,
+      totalItems,
       totalPages,
-      totalItems: results.length
+      currentPage: page
     };
+  }
+
+  clearOldSearches(hours = 1) {
+    const now = Date.now();
+    const maxAge = hours * 60 * 60 * 1000;
+    
+    for (const [key, data] of this.searches.entries()) {
+      if (data.timestamp && now - data.timestamp > maxAge) {
+        this.searches.delete(key);
+      }
+    }
   }
 }
 
-module.exports = new UserStateManager();
+module.exports = new StateManager();
