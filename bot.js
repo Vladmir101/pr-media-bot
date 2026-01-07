@@ -188,7 +188,10 @@ class PRBot {
         stateManager.updateState(chatId, {
           currentSection: 'profile'
         });
-        await this.showProfile(chatId);
+        await this.bot.sendMessage(chatId, '👤 *ЛИЧНЫЙ КАБИНЕТ*\n\nВ разработке...', {
+          parse_mode: 'Markdown',
+          ...keyboards.getBackKeyboard()
+        });
         break;
 
       case '📞 СВЯЗАТЬСЯ С МЕНЕДЖЕРОМ':
@@ -521,34 +524,6 @@ class PRBot {
       await this.bot.sendMessage(
         chatId,
         '❌ Ошибка загрузки избранного',
-        keyboards.getBackKeyboard()
-      );
-    }
-  }
-
-  async showProfile(chatId) {
-    try {
-      const user = await User.findOne({ where: { telegramId: chatId } });
-      const favorites = JSON.parse(user?.favorites || '[]');
-      const isAdmin = this.isAdmin(chatId);
-
-      let message = `👤 *ЛИЧНЫЙ КАБИНЕТ*\n\n`;
-      message += `🆔 ID: ${chatId}\n`;
-      message += `👤 Имя: ${user?.firstName || 'Не указано'}\n`;
-      message += `📅 Регистрация: ${user ? new Date(user.createdAt).toLocaleDateString('ru-RU') : 'Нет данных'}\n`;
-      message += `⭐ Избранное: ${favorites.length} СМИ\n`;
-      message += `👑 Статус: ${isAdmin ? 'Администратор' : 'Пользователь'}\n\n`;
-      message += `_Используйте кнопку "Назад" для возврата в меню_`;
-
-      await this.bot.sendMessage(chatId, message, {
-        parse_mode: 'Markdown',
-        ...keyboards.getBackKeyboard()
-      });
-    } catch (error) {
-      console.error('Ошибка показа профиля:', error);
-      await this.bot.sendMessage(
-        chatId,
-        '❌ Ошибка загрузки профиля',
         keyboards.getBackKeyboard()
       );
     }
