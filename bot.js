@@ -138,36 +138,51 @@ class PRBot {
     return '🌍';
   }
   
-  // Главное меню
+  // Главное меню (INLINE-КЛАВИАТУРА)
   getMainMenu(isAdmin = false) {
-    const menu = {
-      reply_markup: {
-        keyboard: [
-          ['🔍 ПОИСК СМИ'],
-          ['📞 КОНТАКТЫ']
-        ],
-        resize_keyboard: true
-      }
-    };
+    const inlineKeyboard = [
+      [
+        { text: '🔍 ПОИСК СМИ', callback_data: 'main_search' },
+        { text: '📞 КОНТАКТЫ', callback_data: 'main_contacts' }
+      ]
+    ];
     
     if (isAdmin) {
-      menu.reply_markup.keyboard.push(['⚙️ АДМИН']);
+      inlineKeyboard.push([
+        { text: '⚙️ АДМИН', callback_data: 'main_admin' }
+      ]);
     }
     
-    return menu;
+    return {
+      reply_markup: {
+        inline_keyboard: inlineKeyboard
+      }
+    };
   }
   
-  // Меню поиска СМИ
+  // Меню поиска СМИ (INLINE-КЛАВИАТУРА)
   getSearchMenu() {
     return {
       reply_markup: {
-        keyboard: [
-          ['🔍 Бизнес-СМИ', '💻 IT-СМИ', '📰 Новостные'],
-          ['🇷🇺 Российские', '🌍 Международные'],
-          ['💰 До 100к', '💰 До 200к'],
-          ['📊 Все СМИ', '🔙 Назад']
-        ],
-        resize_keyboard: true
+        inline_keyboard: [
+          [
+            { text: '🔍 Бизнес-СМИ', callback_data: 'filter_business' },
+            { text: '💻 IT-СМИ', callback_data: 'filter_it' },
+            { text: '📰 Новостные', callback_data: 'filter_news' }
+          ],
+          [
+            { text: '🇷🇺 Российские', callback_data: 'filter_russian' },
+            { text: '🌍 Международные', callback_data: 'filter_international' }
+          ],
+          [
+            { text: '💰 До 100к', callback_data: 'filter_price_100k' },
+            { text: '💰 До 200к', callback_data: 'filter_price_200k' },
+            { text: '📊 Все СМИ', callback_data: 'filter_all' }
+          ],
+          [
+            { text: '🔙 Назад', callback_data: 'back_to_main' }
+          ]
+        ]
       }
     };
   }
@@ -187,6 +202,9 @@ class PRBot {
         `Выберите действие:`;
       
       const isAdmin = this.isAdmin(chatId);
+      
+      // Удаляем любые существующие reply-клавиатуры
+      await this.removeReplyKeyboard(chatId);
       
       await this.bot.sendMessage(chatId, welcomeMessage, {
         parse_mode: 'Markdown',
@@ -217,48 +235,42 @@ class PRBot {
       }
     });
     
-    // Обработка текстовых сообщений
-    this.bot.on('message', async (msg) => {
-      const chatId = msg.chat.id;
-      const text = msg.text;
-      
-      if (text.startsWith('/')) return;
-      
-      const userState = stateManager.getState(chatId);
-      
-      // Проверка на админ-команды
-      if (this.isAdmin(chatId) && text === '⚙️ АДМИН') {
-        await this.showAdminMenu(chatId);
-        return;
-      }
-      
-      // Главное меню
-      if (!userState.currentSection) {
-        await this.handleMainMenu(chatId, text);
-      } 
-      // Раздел поиска
-      else if (userState.currentSection === 'search') {
-        await this.handleSearch(chatId, text, userState);
-      }
-    });
-    
     // Обработка инлайн-кнопок
     this.bot.on('callback_query', async (query) => {
       const chatId = query.message.chat.id;
       const data = query.data;
       
-      // Пагинация для поиска
-      if (data.startsWith('page_')) {
-        const [_, searchId, page] = data.split('_');
-        await this.showResultsPage(chatId, searchId, parseInt(page));
-      }
       // Главное меню
-      else if (data === 'to_main') {
+      if (data === 'main_search') {
+        await this.showSearchMenu(chatId);
+      } 
+      else if (data === 'main_contacts') {
+        await this.showContacts(chatId);
+      }
+      else if (data === 'main_admin') {
+        if (this.isAdmin(chatId)) {
+          await this.showAdminMenu(chatId);
+        } else {
+          await this.bot.sendMessage(chatId, '⛔ У вас нет прав администратора');
+        }
+      }
+      else if (data === 'back_to_main') {
         stateManager.resetState(chatId);
+        const isAdmin = this.isAdmin(chatId);
         await this.bot.sendMessage(chatId, '🏠 *Главное меню*', {
           parse_mode: 'Markdown',
-          ...this.getMainMenu(this.isAdmin(chatId))
+          ...this.getMainMenu(isAdmin)
         });
+      }
+      // Фильтры поиска
+      else if (data.startsWith('filter_')) {
+        const filterType = data.replace('filter_', '');
+        await this.handleSearchFilter(chatId, filterType);
+      }
+      // Пагинация для поиска
+      else if (data.startsWith('page_')) {
+        const [_, searchId, page] = data.split('_');
+        await this.showResultsPage(chatId, searchId, parseInt(page));
       }
       // Новый поиск
       else if (data === 'new_search') {
@@ -270,6 +282,36 @@ class PRBot {
       
       await this.bot.answerCallbackQuery(query.id);
     });
+    
+    // Обработка текстовых сообщений (оставляем для команды /admin если нужно)
+    this.bot.on('message', async (msg) => {
+      const chatId = msg.chat.id;
+      const text = msg.text;
+      
+      if (text.startsWith('/')) return;
+      
+      // Если кто-то все-таки отправил текст (не через inline-кнопки)
+      if (text === '🔍 ПОИСК СМИ') {
+        await this.showSearchMenu(chatId);
+      }
+      else if (text === '📞 КОНТАКТЫ') {
+        await this.showContacts(chatId);
+      }
+      else if (text === '⚙️ АДМИН' && this.isAdmin(chatId)) {
+        await this.showAdminMenu(chatId);
+      }
+    });
+  }
+  
+  // Удаление reply-клавиатуры
+  async removeReplyKeyboard(chatId) {
+    try {
+      await this.bot.sendMessage(chatId, '⌛', {
+        reply_markup: { remove_keyboard: true }
+      }).then(msg => this.bot.deleteMessage(chatId, msg.message_id));
+    } catch (error) {
+      // Игнорируем ошибки
+    }
   }
   
   // Инициализация CSV команд
@@ -408,31 +450,6 @@ class PRBot {
     }
   }
   
-  // Главное меню
-  async handleMainMenu(chatId, text) {
-    switch(text) {
-      case '🔍 ПОИСК СМИ':
-        await this.showSearchMenu(chatId);
-        break;
-        
-      case '📞 КОНТАКТЫ':
-        await this.showContacts(chatId);
-        break;
-        
-      case '⚙️ АДМИН':
-        if (this.isAdmin(chatId)) {
-          await this.showAdminMenu(chatId);
-        } else {
-          await this.bot.sendMessage(chatId, '⛔ У вас нет прав администратора');
-        }
-        break;
-        
-      default:
-        await this.bot.sendMessage(chatId, 'Пожалуйста, выберите действие из меню:', 
-          this.getMainMenu(this.isAdmin(chatId)));
-    }
-  }
-  
   // Показать меню поиска
   async showSearchMenu(chatId) {
     stateManager.updateState(chatId, {
@@ -445,50 +462,41 @@ class PRBot {
     });
   }
   
-  // Обработка поиска
-  async handleSearch(chatId, text, state) {
-    if (text === '🔙 Назад') {
-      stateManager.resetState(chatId);
-      await this.bot.sendMessage(chatId, '🏠 *Главное меню*', {
-        parse_mode: 'Markdown',
-        ...this.getMainMenu(this.isAdmin(chatId))
-      });
-      return;
-    }
-    
+  // Обработка фильтров поиска через inline-кнопки
+  async handleSearchFilter(chatId, filterType) {
     let filters = {};
     let filterName = '';
     
-    switch(text) {
-      case '🔍 Бизнес-СМИ':
+    switch(filterType) {
+      case 'business':
         filters.category = 'Business';
         filterName = 'бизнес-СМИ';
         break;
-      case '💻 IT-СМИ':
+      case 'it':
         filters.category = 'Technology';
         filterName = 'IT-СМИ';
         break;
-      case '📰 Новостные':
+      case 'news':
         filters.category = 'News';
         filterName = 'новостные СМИ';
         break;
-      case '🇷🇺 Российские':
+      case 'russian':
         filters.country = 'Russia';
         filterName = 'российские СМИ';
         break;
-      case '🌍 Международные':
+      case 'international':
         filters.country = 'United States of America';
         filterName = 'международные СМИ';
         break;
-      case '💰 До 100к':
+      case 'price_100k':
         filters.maxPrice = 100000;
         filterName = 'до 100,000 руб.';
         break;
-      case '💰 До 200к':
+      case 'price_200k':
         filters.maxPrice = 200000;
         filterName = 'до 200,000 руб.';
         break;
-      case '📊 Все СМИ':
+      case 'all':
         filterName = 'все СМИ';
         break;
       default:
@@ -629,7 +637,7 @@ class PRBot {
     inlineKeyboard.push([
       {
         text: '🏠 Главное меню',
-        callback_data: 'to_main'
+        callback_data: 'back_to_main'
       },
       {
         text: '🔄 Новый поиск',
@@ -696,9 +704,11 @@ class PRBot {
       `• Медиапланирование\n\n` +
       `Напишите ваш вопрос в чат.`;
     
+    const isAdmin = this.isAdmin(chatId);
+    
     await this.bot.sendMessage(chatId, message, {
       parse_mode: 'Markdown',
-      ...this.getMainMenu(this.isAdmin(chatId))
+      ...this.getMainMenu(isAdmin)
     });
   }
   
@@ -717,18 +727,12 @@ class PRBot {
       `/stats - Статистика системы\n` +
       `/check - Проверка системы`;
     
+    const isAdmin = this.isAdmin(chatId);
+    
     await this.bot.sendMessage(chatId, message, {
-      parse_mode: 'Markdown'
+      parse_mode: 'Markdown',
+      ...this.getMainMenu(isAdmin)
     });
-  }
-  
-  // Обработка админ-команд
-  async handleAdminCommand(chatId, text) {
-    switch(text) {
-      case '⚙️ АДМИН':
-        await this.showAdminMenu(chatId);
-        break;
-    }
   }
 }
 
