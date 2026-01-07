@@ -1,1358 +1,760 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { User, SMI, importSMIFromCSV, searchSMILikeCSV, initDatabase, Op, fixSMITable } = require('./database');
-const keyboards = require('./keyboards'); // Подключаем клавиатуры
-const stateManager = require('./states'); // Подключаем менеджер состояний
+const stateManager = require('./states');
+const keyboards = require('./keyboards');
 const fs = require('fs');
 
 class PRBot {
   constructor(useWebhook = false) {
     const options = {
-      request: {
-        timeout: 60000
-      }
+      polling: !useWebhook,
+      webHook: useWebhook ? {
+        port: process.env.PORT || 3000
+      } : false
     };
-    
-    if (useWebhook) {
-      this.bot = new TelegramBot(process.env.BOT_TOKEN, options);
-      console.log('🤖 Бот инициализирован в режиме вебхука');
-    } else {
-      options.polling = true;
-      this.bot = new TelegramBot(process.env.BOT_TOKEN, options);
-      console.log('🤖 Бот инициализирован в режиме polling');
-    }
-    
-    this.ADMIN_IDS = process.env.ADMIN_IDS ? 
-      process.env.ADMIN_IDS.split(',') : 
-      ['5970834739'];
-    
-    this.csvSearches = new Map(); // Хранит результаты поисков: chatId_searchId -> {results, filterName, createdAt}
-    
-    this.initHandlers();
-    this.initCSVCommands();
+
+    this.bot = new TelegramBot(process.env.BOT_TOKEN, options);
+    this.useWebhook = useWebhook;
+    this.keyboards = keyboards;
+    this.stateManager = stateManager;
+
+    // Инициализация
+    this.init();
   }
-  
-  startWebhook(webhookPath, port = process.env.PORT || 3000) {
-    const webhookUrl = process.env.WEBHOOK_URL || `${process.env.REPLIT_URL || process.env.RAILWAY_URL || process.env.RENDER_URL || ''}${webhookPath}`;
+
+  init() {
+    console.log('🤖 Бот инициализирован в режиме ' + (this.useWebhook ? 'вебхука' : 'поллинга'));
     
-    console.log(`🔗 Устанавливаю вебхук: ${webhookUrl}`);
-    
-    this.bot.setWebHook(webhookUrl)
-      .then(() => {
-        console.log(`✅ Вебхук установлен: ${webhookUrl}`);
-      })
-      .catch(err => {
-        console.error('❌ Ошибка установки вебхука:', err);
-      });
-    
-    const express = require('express');
-    const app = express();
-    app.use(express.json());
-    
-    app.get('/health', (req, res) => {
-      res.status(200).send('OK');
-    });
-    
-    app.post(webhookPath, (req, res) => {
-      this.bot.processUpdate(req.body);
-      res.sendStatus(200);
-    });
-    
-    app.listen(port, () => {
-      console.log(`🚀 Сервер запущен на порту ${port}`);
-      console.log(`🌐 Вебхук: ${webhookPath}`);
-      console.log(`🏥 Health check: http://localhost:${port}/health`);
-    });
-    
-    return app;
-  }
-  
-  isAdmin(chatId) {
-    return this.ADMIN_IDS.includes(chatId.toString());
-  }
-  
-  // Получение эмодзи для категории (используем из keyboards.js)
-  getCategoryEmoji(category) {
-    return keyboards.getCategoryEmoji ? keyboards.getCategoryEmoji(category) : '📋';
-  }
-  
-  // Получение флага для страны (используем из keyboards.js)
-  getCountryFlag(country) {
-    return keyboards.getCountryFlag ? keyboards.getCountryFlag(country) : '🌍';
-  }
-  
-  initHandlers() {
-    // Команда /start
-    this.bot.onText(/\/start/, async (msg) => {
-      const chatId = msg.chat.id;
-      await this.registerUser(msg);
-      stateManager.resetState(chatId);
-      
-      const welcomeMessage = `👋 *Добро пожаловать в MediaPro!*\n\n` +
-        `Я помогу вам найти подходящие СМИ из базы данных.\n\n` +
-        `Выберите нужный раздел:`;
-      
-      const isAdmin = this.isAdmin(chatId);
-      
-      await this.bot.sendMessage(chatId, welcomeMessage, {
-        parse_mode: 'Markdown',
-        ...keyboards.getMainMenu(isAdmin)
-      });
-    });
-    
-    // Команда /search
-    this.bot.onText(/\/search/, async (msg) => {
-      const chatId = msg.chat.id;
-      await this.showSearchTypeMenu(chatId);
-    });
-    
-    // Команда /contacts
-    this.bot.onText(/\/contacts/, async (msg) => {
-      const chatId = msg.chat.id;
-      await this.showContactManager(chatId);
-    });
-    
-    // Команда /admin
-    this.bot.onText(/\/admin/, async (msg) => {
-      const chatId = msg.chat.id;
-      
-      if (this.isAdmin(chatId)) {
-        await this.showAdminMenu(chatId);
-      } else {
-        await this.bot.sendMessage(chatId, '⛔ У вас нет прав администратора');
-      }
-    });
-    
-    // Обработка текстовых сообщений
+    // Обработчики команд
     this.bot.on('message', async (msg) => {
-      const chatId = msg.chat.id;
-      const text = msg.text;
-      
-      if (text.startsWith('/')) return;
-      
-      const userState = stateManager.getState(chatId);
-      
-      // Проверка на админ-команды
-      if (this.isAdmin(chatId) && text === '⚙️ АДМИН-ПАНЕЛЬ') {
-        await this.showAdminMenu(chatId);
-        return;
-      }
-      
-      // Главное меню
-      if (!userState.currentSection) {
-        await this.handleMainMenu(chatId, text);
-      } 
-      // Раздел поиска СМИ
-      else if (userState.currentSection === 'smi') {
-        await this.handleSMIFlow(chatId, text, userState);
-      }
-      // Раздел профиля
-      else if (userState.currentSection === 'profile') {
-        await this.handleProfile(chatId, text, userState);
-      }
-    });
-    
-    // Обработка инлайн-кнопок
-    this.bot.on('callback_query', async (query) => {
-      const chatId = query.message.chat.id;
-      const data = query.data;
-      
-      console.log(`📲 Callback query: ${data} от ${chatId}`);
-      
-      // Пагинация для поиска
-      if (data.startsWith('page_')) {
-        const [_, searchId, page] = data.split('_');
-        await this.showResultsPage(chatId, searchId, parseInt(page));
-      }
-      // Главное меню
-      else if (data === 'main_menu') {
-        stateManager.resetState(chatId);
-        const isAdmin = this.isAdmin(chatId);
-        await this.bot.sendMessage(chatId, '🏠 *Главное меню*', {
-          parse_mode: 'Markdown',
-          ...keyboards.getMainMenu(isAdmin)
-        });
-      }
-      // Новый поиск
-      else if (data === 'new_search') {
-        await this.showSearchTypeMenu(chatId);
-      }
-      // Экспорт
-      else if (data.startsWith('export_')) {
-        const searchId = data.split('_')[1];
-        await this.exportToCSV(chatId, searchId);
-      }
-      // Добавление в избранное
-      else if (data.startsWith('fav_smi_')) {
-        const itemId = data.split('_')[2];
-        await this.addToFavorites(chatId, 'smi', parseInt(itemId));
-        await this.bot.answerCallbackQuery(query.id, { text: '✅ Добавлено в избранное' });
-      }
-      // Контакты
-      else if (data.startsWith('contact_smi_')) {
-        const itemId = data.split('_')[2];
-        await this.showContactInfo(chatId, 'smi', parseInt(itemId));
-      }
-      // Закрыть уведомление
-      else if (data === 'close_notification') {
-        try {
-          await this.bot.deleteMessage(chatId, query.message.message_id);
-        } catch (error) {
-          // Игнорируем ошибки удаления
-        }
-      }
-      
-      await this.bot.answerCallbackQuery(query.id);
-    });
-  }
-  
-  // Инициализация CSV команд
-  initCSVCommands() {
-    // Команда /import - импорт данных
-    this.bot.onText(/\/import/, async (msg) => {
-      const chatId = msg.chat.id;
-      
-      if (!this.isAdmin(chatId)) {
-        await this.bot.sendMessage(chatId, '⛔ У вас нет прав администратора');
-        return;
-      }
-      
       try {
-        await this.bot.sendMessage(chatId, '🔄 Начинаю импорт данных из CSV...');
-        
-        const result = await importSMIFromCSV('./smi-import-fixed.csv');
-        
-        let response = `✅ *Импорт завершен!*\n\n`;
-        response += `📊 *Результаты:*\n`;
-        response += `• Прочитано записей: ${result.total}\n`;
-        response += `• Добавлено новых: ${result.imported}\n`;
-        response += `• Обновлено: ${result.updated}\n\n`;
-        response += `Всего в базе: ${await SMI.count()} записей`;
-        
-        await this.bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
-        
+        await this.handleMessage(msg);
       } catch (error) {
-        console.error('Ошибка импорта CSV:', error);
-        await this.bot.sendMessage(chatId, `❌ Ошибка импорта: ${error.message}`);
+        console.error('Ошибка обработки сообщения:', error.message);
       }
     });
 
-    // Команда /fixtable - исправление таблицы
-    this.bot.onText(/\/fixtable/, async (msg) => {
-      const chatId = msg.chat.id;
-      
-      if (!this.isAdmin(chatId)) {
-        await this.bot.sendMessage(chatId, '⛔ Только для администраторов');
-        return;
-      }
-      
+    // Обработчики callback-запросов (inline кнопки)
+    this.bot.on('callback_query', async (callbackQuery) => {
       try {
-        await this.bot.sendMessage(chatId, '🔄 Пересоздаю таблицу smis...');
-        
-        const result = await fixSMITable();
-        
-        if (result.success) {
-          await this.bot.sendMessage(chatId, 
-            '🎉 *ТАБЛИЦА ПЕРЕСОЗДАНА!*\n\n' +
-            'Теперь импортируйте данные:\n' +
-            '`/import` - загрузит СМИ из CSV',
-            { parse_mode: 'Markdown' }
-          );
-        } else {
-          await this.bot.sendMessage(chatId, `❌ Ошибка: ${result.message}`);
-        }
-        
+        await this.handleCallbackQuery(callbackQuery);
       } catch (error) {
-        console.error('Ошибка пересоздания таблицы:', error);
-        await this.bot.sendMessage(chatId, `❌ Ошибка: ${error.message}`);
+        console.error('Ошибка обработки callback:', error.message);
       }
     });
-    
-    // Команда /stats - статистика
-    this.bot.onText(/\/stats/, async (msg) => {
+
+    // Команда /start
+    this.bot.onText(/\/start/, async (msg) => {
       const chatId = msg.chat.id;
+      console.log(`👋 Новый пользователь: ${chatId} - ${msg.from.first_name}`);
+
+      // Регистрируем пользователя
+      await this.registerUser(chatId, msg.from);
+
+      // Отправляем главное меню
+      const isAdmin = this.isAdmin(chatId);
+      const mainMenuKeyboard = keyboards.getMainMenu(isAdmin);
       
-      try {
-        const smiCount = await SMI.count();
-        const userCount = await User.count();
-        
-        const message = `📊 *СТАТИСТИКА СИСТЕМЫ*\n\n` +
-          `📰 СМИ в базе: ${smiCount}\n` +
-          `👥 Пользователей: ${userCount}\n` +
-          `🕒 Время сервера: ${new Date().toLocaleString('ru-RU')}`;
-        
-        await this.bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-        
-      } catch (error) {
-        await this.bot.sendMessage(chatId, `❌ Ошибка: ${error.message}`);
-      }
+      await this.bot.sendMessage(
+        chatId,
+        `👋 Добро пожаловать в MediaPro!\n\nЯ помогу вам найти подходящие СМИ из базы данных.\n\nВыберите нужный раздел:`,
+        mainMenuKeyboard
+      );
     });
-    
-    // Команда /check - проверка системы
+
+    // Команда /help
+    this.bot.onText(/\/help/, (msg) => {
+      const chatId = msg.chat.id;
+      this.bot.sendMessage(
+        chatId,
+        `📚 *Помощь по боту MediaPro*\n\n` +
+        `Основные команды:\n` +
+        `/start - Главное меню\n` +
+        `/search - Поиск СМИ\n` +
+        `/stats - Статистика\n` +
+        `/check - Проверка системы\n\n` +
+        `Админ-команды:\n` +
+        `/import - Импорт CSV\n` +
+        `/broadcast - Рассылка`,
+        { parse_mode: 'Markdown' }
+      );
+    });
+
+    // Команда /check
     this.bot.onText(/\/check/, async (msg) => {
       const chatId = msg.chat.id;
-      
-      try {
-        await require('./database').sequelize.authenticate();
-        
-        const smiCount = await SMI.count();
-        const csvExists = fs.existsSync('./smi-import-fixed.csv');
-        
-        let report = `✅ *СИСТЕМА РАБОТАЕТ НОРМАЛЬНО*\n\n`;
-        report += `🗄️ База данных: ✅ Подключена\n`;
-        report += `📰 Записей СМИ: ${smiCount}\n`;
-        report += `📁 CSV файл: ${csvExists ? '✅ Найден' : '❌ Не найден'}\n\n`;
-        report += `🎯 *Доступные команды:*\n`;
-        report += `/search - Поиск СМИ\n`;
-        report += `/stats - Статистика\n`;
-        
-        if (this.isAdmin(chatId)) {
-          report += `/import - Импорт CSV\n`;
-          report += `/fixtable - Исправить таблицу\n`;
-        }
-        
-        await this.bot.sendMessage(chatId, report, { parse_mode: 'Markdown' });
-        
-      } catch (error) {
-        await this.bot.sendMessage(chatId, 
-          `❌ *ОШИБКА СИСТЕМЫ*\n\n` +
-          `Сообщение: ${error.message}\n\n` +
-          `Проверьте подключение к базе данных.`,
-          { parse_mode: 'Markdown' }
-        );
+      await this.showSystemCheck(chatId);
+    });
+
+    // Команда /import (только для админов)
+    this.bot.onText(/\/import/, async (msg) => {
+      const chatId = msg.chat.id;
+      if (this.isAdmin(chatId)) {
+        await this.startCSVImport(chatId);
+      } else {
+        this.bot.sendMessage(chatId, '⚠️ У вас нет прав администратора');
       }
     });
-  }
-  
-  // Регистрация пользователя
-  async registerUser(msg) {
-    const { id, username, first_name, last_name } = msg.from;
-    
-    try {
-      await User.findOrCreate({
-        where: { telegramId: id },
-        defaults: {
-          username,
-          firstName: first_name,
-          lastName: last_name
-        }
+
+    // Команда /stats
+    this.bot.onText(/\/stats/, async (msg) => {
+      const chatId = msg.chat.id;
+      await this.showStats(chatId);
+    });
+
+    // Если используется вебхук
+    if (this.useWebhook) {
+      const express = require('express');
+      const app = express();
+      app.use(express.json());
+
+      // Эндпоинт для вебхука
+      app.post('/webhook', (req, res) => {
+        this.bot.processUpdate(req.body);
+        res.sendStatus(200);
       });
-    } catch (error) {
-      console.error('Ошибка регистрации пользователя:', error);
+
+      // Health check
+      app.get('/health', (req, res) => {
+        res.json({ status: 'ok', timestamp: new Date().toISOString() });
+      });
+
+      const port = process.env.PORT || 3000;
+      app.listen(port, () => {
+        console.log(`🚀 Сервер запущен на порту ${port}`);
+        console.log(`🌐 Вебхук: /webhook`);
+        console.log(`🏥 Health check: http://localhost:${port}/health`);
+      });
     }
   }
-  
-  // Главное меню
+
+  async handleMessage(msg) {
+    const chatId = msg.chat.id;
+    const text = msg.text;
+
+    if (!text) return;
+
+    console.log(`📝 Сообщение от ${chatId}: ${text}`);
+
+    // Проверяем состояние пользователя
+    const userState = this.stateManager.getState(chatId);
+
+    if (userState.currentSection) {
+      await this.handleSection(chatId, text, userState);
+    } else {
+      await this.handleMainMenu(chatId, text);
+    }
+  }
+
   async handleMainMenu(chatId, text) {
     const isAdmin = this.isAdmin(chatId);
-    
+
     switch(text) {
       case '📰 ПОДОБРАТЬ СМИ':
-        await this.showSearchTypeMenu(chatId);
-        break;
-        
+        console.log('🔍 Пользователь выбрал ПОДОБРАТЬ СМИ');
+        const categoriesKeyboard = keyboards.getSMICategories();
+        return this.bot.sendMessage(chatId, '🔍 Выберите тип поиска СМИ:', categoriesKeyboard);
+
       case '🏆 ПРЕМИИ':
         await this.bot.sendMessage(chatId, '🏆 *РАЗДЕЛ ПРЕМИЙ*\n\nФункционал в разработке', {
           parse_mode: 'Markdown',
           ...keyboards.getMainMenu(isAdmin)
         });
         break;
-        
+
       case '👨‍⚖️ ЖЮРИ':
         await this.bot.sendMessage(chatId, '👨‍⚖️ *РАЗДЕЛ ЖЮРИ*\n\nФункционал в разработке', {
           parse_mode: 'Markdown',
           ...keyboards.getMainMenu(isAdmin)
         });
         break;
-        
+
       case '🤝 АССОЦИАЦИИ':
         await this.bot.sendMessage(chatId, '🤝 *РАЗДЕЛ АССОЦИАЦИЙ*\n\nФункционал в разработке', {
           parse_mode: 'Markdown',
           ...keyboards.getMainMenu(isAdmin)
         });
         break;
-        
+
       case '⭐ ИЗБРАННОЕ':
         await this.showFavorites(chatId);
         break;
-        
+
       case '👤 ЛИЧНЫЙ КАБИНЕТ':
         stateManager.updateState(chatId, {
           currentSection: 'profile'
         });
         await this.showProfile(chatId);
         break;
-        
+
       case '📞 СВЯЗАТЬСЯ С МЕНЕДЖЕРОМ':
         await this.showContactManager(chatId);
         break;
-        
-      case '⚙️ АДМИН-PANEЛЬ':
+
+      case '⚙️ АДМИН-ПАНЕЛЬ':
         if (isAdmin) {
           await this.showAdminMenu(chatId);
         } else {
-          await this.bot.sendMessage(chatId, '⛔ У вас нет прав администратора');
+          await this.bot.sendMessage(chatId, '⚠️ У вас нет прав администратора');
         }
         break;
-        
+
       default:
         await this.bot.sendMessage(chatId, 'Пожалуйста, выберите раздел из меню:', 
           keyboards.getMainMenu(isAdmin));
     }
   }
-  
-  // Показать меню выбора типа поиска
-  async showSearchTypeMenu(chatId) {
-    stateManager.updateState(chatId, {
-      currentSection: 'smi',
-      step: 'search_type',
-      filters: {}
-    });
-    
-    await this.bot.sendMessage(chatId, 
-      '📰 *ПОДБОР СМИ*\n\n' +
-      'Выберите тип поиска:\n\n' +
-      '⚡ *Быстрый поиск* - популярные фильтры\n' +
-      '🔍 *Расширенный поиск* - точная настройка',
-      {
-        parse_mode: 'Markdown',
-        ...keyboards.getSearchTypeMenu()
-      }
-    );
-  }
-  
-  // Обработка потока СМИ
-  async handleSMIFlow(chatId, text, state) {
+
+  async handleSection(chatId, text, state) {
     const isAdmin = this.isAdmin(chatId);
-    
-    switch(state.step) {
-      case 'search_type':
-        if (text === '⬅️ НАЗАД' || text === '🏠 ГЛАВНОЕ МЕНЮ') {
-          stateManager.resetState(chatId);
-          await this.bot.sendMessage(chatId, 'Главное меню:', 
-            keyboards.getMainMenu(isAdmin));
-          return;
-        }
-        
+
+    switch(state.currentSection) {
+      case 'search':
         if (text === '⚡ Быстрый поиск') {
-          stateManager.updateState(chatId, { step: 'quick_menu' });
-          await this.showQuickSearchMenu(chatId);
-          return;
-        }
-        
-        if (text === '🔍 Расширенный поиск') {
-          stateManager.updateState(chatId, { step: 'category' });
-          await this.bot.sendMessage(chatId, '📌 *ВЫБЕРИТЕ КАТЕГОРИЮ СМИ:*', {
-            parse_mode: 'Markdown',
-            ...keyboards.getSMICategories()
-          });
-          return;
+          await this.showQuickSearch(chatId);
+        } else if (text === '🔍 Расширенный поиск') {
+          await this.showAdvancedSearch(chatId);
+        } else if (text === '🏆 Премии и конкурсы') {
+          await this.showAwardsSearch(chatId);
+        } else if (text === '🔙 Назад') {
+          stateManager.clearState(chatId);
+          await this.bot.sendMessage(chatId, 'Главное меню:', keyboards.getMainMenu(isAdmin));
         }
         break;
-        
-      case 'quick_menu':
-        await this.handleQuickSearch(chatId, text, state);
+
+      case 'quick_search':
+        if (text === '🔥 ТОП Business') {
+          await this.searchByCategory(chatId, 'Business', 1);
+        } else if (text === '📱 ТОП Tech & Startups') {
+          await this.searchByCategory(chatId, 'Tech', 1);
+        } else if (text === '💰 ТОП Finance') {
+          await this.searchByCategory(chatId, 'Finance', 1);
+        } else if (text === '🌿 ТОП Lifestyle & Eco') {
+          await this.searchByCategory(chatId, 'Lifestyle', 1);
+        } else if (text === '🔙 Назад') {
+          stateManager.updateState(chatId, { currentSection: 'search' });
+          await this.bot.sendMessage(chatId, '🔍 Выберите тип поиска СМИ:', keyboards.getSMICategories());
+        }
         break;
-        
-      case 'category':
-        if (text === '⬅️ НАЗАД') {
-          stateManager.updateState(chatId, { step: 'search_type' });
-          await this.bot.sendMessage(chatId, 'Выберите тип поиска:', keyboards.getSearchTypeMenu());
-          return;
+
+      case 'profile':
+        if (text === '🔙 Назад') {
+          stateManager.clearState(chatId);
+          await this.bot.sendMessage(chatId, 'Главное меню:', keyboards.getMainMenu(isAdmin));
         }
-        if (text === '🏠 ГЛАВНОЕ МЕНЮ') {
-          stateManager.resetState(chatId);
-          await this.bot.sendMessage(chatId, 'Главное меню:', 
-            keyboards.getMainMenu(isAdmin));
-          return;
-        }
-        
-        // Сохраняем выбранную категорию (убираем эмодзи)
-        const category = text.replace(/^[^\w\s]+\s/, '');
-        stateManager.updateState(chatId, {
-          ...state,
-          filters: { ...state.filters, category },
-          step: 'country'
-        });
-        
-        await this.bot.sendMessage(chatId, '🌍 *ВЫБЕРИТЕ СТРАНУ:*', {
-          parse_mode: 'Markdown',
-          ...keyboards.getCountries()
-        });
         break;
-        
-      case 'country':
-        if (text === '⬅️ НАЗАД') {
-          stateManager.updateState(chatId, { step: 'category' });
-          await this.bot.sendMessage(chatId, 'Выберите категорию:', keyboards.getSMICategories());
-          return;
+
+      case 'admin':
+        if (text === '📊 Статистика') {
+          await this.showAdminStats(chatId);
+        } else if (text === '📁 Импорт CSV') {
+          await this.startCSVImport(chatId);
+        } else if (text === '📢 Рассылка') {
+          await this.startBroadcast(chatId);
+        } else if (text === '🔙 На главную') {
+          stateManager.clearState(chatId);
+          await this.bot.sendMessage(chatId, 'Главное меню:', keyboards.getMainMenu(isAdmin));
         }
-        if (text === '🏠 ГЛАВНОЕ МЕНЮ') {
-          stateManager.resetState(chatId);
-          await this.bot.sendMessage(chatId, 'Главное меню:', 
-            keyboards.getMainMenu(isAdmin));
-          return;
-        }
-        
-        let country = '';
-        if (text === '🌍 Все страны') {
-          country = ''; // Будем игнорировать фильтр по стране
-        } else if (text === '🌏 Другая страна') {
-          // Запрос ручного ввода
-          stateManager.updateState(chatId, { ...state, step: 'custom_country' });
-          await this.bot.sendMessage(chatId,
-            '🌍 Введите название страны на английском:\n(например: Germany, France, Japan)',
-            {
-              parse_mode: 'Markdown',
-              reply_markup: {
-                keyboard: [['⬅️ НАЗАД']],
-                resize_keyboard: true
-              }
-            }
-          );
-          return;
-        } else {
-          // Убираем флаг эмодзи
-          country = text.split(' ').slice(1).join(' ');
-          // Конвертируем русское название в английское для поиска
-          if (country === 'Россия') country = 'Russia';
-          else if (country === 'США') country = 'USA';
-          else if (country === 'Германия') country = 'Germany';
-          else if (country === 'Франция') country = 'France';
-          else if (country === 'Китай') country = 'China';
-          else if (country === 'Великобритания') country = 'United Kingdom';
-        }
-        
-        stateManager.updateState(chatId, {
-          ...state,
-          filters: { ...state.filters, country },
-          step: 'backdated'
-        });
-        
-        await this.bot.sendMessage(chatId, '📅 *ЗАДНИЕ ЧИСЛА (BACKDATED)*\n\nНужны ли публикации задним числом?', {
-          parse_mode: 'Markdown',
-          ...keyboards.getBackdatedOptions()
-        });
         break;
-        
-      case 'custom_country':
-        if (text === '⬅️ НАЗАД') {
-          stateManager.updateState(chatId, { step: 'country' });
-          await this.bot.sendMessage(chatId, 'Выберите страну:', keyboards.getCountries());
-          return;
-        }
-        
-        stateManager.updateState(chatId, {
-          ...state,
-          filters: { ...state.filters, country: text },
-          step: 'backdated'
-        });
-        
-        await this.bot.sendMessage(chatId, '📅 *ЗАДНИЕ ЧИСЛА (BACKDATED)*\n\nНужны ли публикации задним числом?', {
-          parse_mode: 'Markdown',
-          ...keyboards.getBackdatedOptions()
-        });
-        break;
-        
-      case 'backdated':
-        if (text === '⬅️ НАЗАД') {
-          stateManager.updateState(chatId, { step: 'country' });
-          await this.bot.sendMessage(chatId, 'Выберите страну:', keyboards.getCountries());
-          return;
-        }
-        if (text === '🏠 ГЛАВНОЕ МЕНЮ') {
-          stateManager.resetState(chatId);
-          await this.bot.sendMessage(chatId, 'Главное меню:', 
-            keyboards.getMainMenu(isAdmin));
-          return;
-        }
-        
-        let backdatedValue = null;
-        if (text.includes('Да')) backdatedValue = true;
-        else if (text.includes('Нет')) backdatedValue = false;
-        else if (text.includes('Не важно')) backdatedValue = null;
-        
-        stateManager.updateState(chatId, {
-          ...state,
-          filters: { ...state.filters, backdated: backdatedValue },
-          step: 'audience'
-        });
-        
-        await this.bot.sendMessage(chatId, '📊 *ВЫБЕРИТЕ ОХВАТ АУДИТОРИИ:*', {
-          parse_mode: 'Markdown',
-          ...keyboards.getAudienceOptions()
-        });
-        break;
-        
-      case 'audience':
-        if (text === '⬅️ НАЗАД') {
-          stateManager.updateState(chatId, { step: 'backdated' });
-          await this.bot.sendMessage(chatId, 'Выберите опцию backdated:', keyboards.getBackdatedOptions());
-          return;
-        }
-        if (text === '🏠 ГЛАВНОЕ МЕНЮ') {
-          stateManager.resetState(chatId);
-          await this.bot.sendMessage(chatId, 'Главное меню:', 
-            keyboards.getMainMenu(isAdmin));
-          return;
-        }
-        
-        let audienceFilter = {};
-        
-        if (text.includes('До 100К')) audienceFilter = { min: 0, max: 100000 };
-        else if (text.includes('100К - 500К')) audienceFilter = { min: 100000, max: 500000 };
-        else if (text.includes('500К - 1М')) audienceFilter = { min: 500000, max: 1000000 };
-        else if (text.includes('1М - 5М')) audienceFilter = { min: 1000000, max: 5000000 };
-        else if (text.includes('5М+')) audienceFilter = { min: 5000000, max: null };
-        else if (text.includes('Любая аудитория')) audienceFilter = { min: 0, max: null };
-        
-        stateManager.updateState(chatId, {
-          ...state,
-          filters: { ...state.filters, audience: audienceFilter },
-          step: 'price'
-        });
-        
-        await this.bot.sendMessage(chatId, '💵 *ВЫБЕРИТЕ ЦЕНОВОЙ ДИАПАЗОН:*', {
-          parse_mode: 'Markdown',
-          ...keyboards.getPriceOptions()
-        });
-        break;
-        
-      case 'price':
-        if (text === '⬅️ НАЗАД') {
-          stateManager.updateState(chatId, { step: 'audience' });
-          await this.bot.sendMessage(chatId, 'Выберите охват аудитории:', keyboards.getAudienceOptions());
-          return;
-        }
-        if (text === '🏠 ГЛАВНОЕ МЕНЮ') {
-          stateManager.resetState(chatId);
-          await this.bot.sendMessage(chatId, 'Главное меню:', 
-            keyboards.getMainMenu(isAdmin));
-          return;
-        }
-        
-        let priceFilter = {};
-        
-        if (text.includes('До 50K')) priceFilter = { max: 50000 };
-        else if (text.includes('50K-100K')) priceFilter = { min: 50000, max: 100000 };
-        else if (text.includes('100K-200K')) priceFilter = { min: 100000, max: 200000 };
-        else if (text.includes('200K+')) priceFilter = { min: 200000, max: null };
-        else if (text.includes('Любая цена')) priceFilter = { min: 0, max: null };
-        
-        // Сохраняем фильтр цены
-        stateManager.updateState(chatId, {
-          ...state,
-          filters: { ...state.filters, price: priceFilter }
-        });
-        
-        // ВЫПОЛНЯЕМ ПОИСК С ВСЕМИ ФИЛЬТРАМИ
-        await this.performExtendedSearch(chatId, state.filters);
-        break;
+
+      default:
+        stateManager.clearState(chatId);
+        await this.bot.sendMessage(chatId, 'Главное меню:', keyboards.getMainMenu(isAdmin));
     }
   }
-  
-  // Показать меню быстрого поиска
-  async showQuickSearchMenu(chatId) {
-    await this.bot.sendMessage(chatId, 
-      '⚡ *БЫСТРЫЙ ПОИСК СМИ*\n\n' +
-      'Выберите популярный фильтр:',
+
+  async handleCallbackQuery(callbackQuery) {
+    const chatId = callbackQuery.message.chat.id;
+    const data = callbackQuery.data;
+
+    console.log(`🔘 Callback от ${chatId}: ${data}`);
+
+    if (data.startsWith('page_')) {
+      const parts = data.split('_');
+      const page = parseInt(parts[1]);
+      const queryId = parts[2] || '';
+      await this.handlePagination(chatId, page, queryId);
+    } else if (data.startsWith('toggle_fav_')) {
+      const smiId = data.split('_')[2];
+      await this.toggleFavorite(chatId, smiId, callbackQuery.message.message_id);
+    } else if (data.startsWith('contacts_')) {
+      const smiId = data.split('_')[1];
+      await this.showContacts(chatId, smiId);
+    } else if (data.startsWith('website_')) {
+      const smiId = data.split('_')[1];
+      await this.showWebsite(chatId, smiId);
+    }
+
+    // Подтверждаем обработку callback
+    this.bot.answerCallbackQuery(callbackQuery.id);
+  }
+
+  async showQuickSearch(chatId) {
+    stateManager.updateState(chatId, {
+      currentSection: 'quick_search'
+    });
+
+    await this.bot.sendMessage(
+      chatId,
+      '⚡ *БЫСТРЫЙ ПОИСК*\n\nВыберите топовую категорию для поиска СМИ:',
       {
         parse_mode: 'Markdown',
-        ...keyboards.getQuickSearchMenu()
+        ...keyboards.getQuickSearchCategories()
       }
     );
   }
-  
-  // Обработка быстрого поиска
-  async handleQuickSearch(chatId, text, state) {
-    const isAdmin = this.isAdmin(chatId);
-    
-    if (text === '⬅️ НАЗАД') {
-      stateManager.updateState(chatId, { step: 'search_type' });
-      await this.bot.sendMessage(chatId, 'Выберите тип поиска:', keyboards.getSearchTypeMenu());
-      return;
-    }
-    
-    if (text === '🏠 ГЛАВНОЕ МЕНЮ') {
-      stateManager.resetState(chatId);
-      await this.bot.sendMessage(chatId, 'Главное меню:', 
-        keyboards.getMainMenu(isAdmin));
-      return;
-    }
-    
-    if (text === '🔍 Расширенный поиск') {
-      stateManager.updateState(chatId, { step: 'category' });
-      await this.bot.sendMessage(chatId, '📌 Выберите категорию:', keyboards.getSMICategories());
-      return;
-    }
-    
-    if (text === '🎯 Рекомендации') {
-      await this.showRecommendations(chatId);
-      return;
-    }
-    
-    const loadingMsg = await this.bot.sendMessage(chatId, '⚡ *Ищу по быстрому фильтру...*', {
-      parse_mode: 'Markdown'
-    });
-    
+
+  async searchByCategory(chatId, category, page = 1) {
     try {
-      let filters = {};
-      let filterName = '';
-      
-      // Определяем фильтры по выбранной кнопке
-      switch(text) {
-        case '🔥 ТОП Business':
-          filters = { category: 'Business' };
-          filterName = 'ТОП Business СМИ';
-          break;
-        case '🔥 ТОП Technology':
-          filters = { category: 'Technology' };
-          filterName = 'ТОП Technology СМИ';
-          break;
-        case '🇷🇺 Российские СМИ':
-          filters = { country: 'Russia' };
-          filterName = 'Российские СМИ';
-          break;
-        case '🌍 Международные':
-          filters = { country: 'USA' };
-          filterName = 'Международные СМИ';
-          break;
-        case '💰 Бюджетные СМИ':
-          filters = { maxPrice: 50000 };
-          filterName = 'Бюджетные СМИ (до 50K руб.)';
-          break;
-        case '👥 Крупная аудитория':
-          filters = { minAudience: 1000000 };
-          filterName = 'СМИ с крупной аудиторией (1M+)';
-          break;
-      }
-      
-      if (Object.keys(filters).length > 0) {
-        const results = await this.searchWithFilters(filters);
-        
-        await this.bot.deleteMessage(chatId, loadingMsg.message_id);
-        
-        if (results.length === 0) {
-          await this.bot.sendMessage(chatId, 
-            `😔 *По фильтру "${filterName}" ничего не найдено.*\n\n` +
-            'Попробуйте другой фильтр или расширенный поиск.',
-            {
-              parse_mode: 'Markdown',
-              ...keyboards.getQuickSearchMenu()
-            }
-          );
-          return;
-        }
-        
-        // Сохраняем результаты для пагинации
-        const searchId = Date.now().toString();
-        this.csvSearches.set(`${chatId}_${searchId}`, {
-          results: results,
-          filterName: filterName,
-          createdAt: Date.now()
-        });
-        
-        // Показываем первую страницу с inline-пагинацией
-        await this.showResultsPage(chatId, searchId, 1);
-      }
-      
-    } catch (error) {
-      console.error('Ошибка быстрого поиска:', error);
-      await this.bot.deleteMessage(chatId, loadingMsg.message_id);
-      await this.bot.sendMessage(chatId, '⚠️ Ошибка поиска. Попробуйте позже.');
-    }
-  }
-  
-  // Поиск с фильтрами (адаптер для searchSMILikeCSV)
-  async searchWithFilters(filters) {
-    try {
-      // Преобразуем фильтры для функции searchSMILikeCSV
-      const searchFilters = {};
-      
-      if (filters.category) searchFilters.category = filters.category;
-      if (filters.country) searchFilters.country = filters.country;
-      if (filters.backdated !== undefined) searchFilters.backdated = filters.backdated;
-      if (filters.maxPrice) searchFilters.maxPrice = filters.maxPrice;
-      if (filters.minPrice) searchFilters.minPrice = filters.minPrice;
-      if (filters.maxAudience) searchFilters.maxAudience = filters.maxAudience;
-      if (filters.minAudience) searchFilters.minAudience = filters.minAudience;
-      if (filters.sortBy) searchFilters.sortBy = filters.sortBy;
-      
-      // Выполняем поиск
-      const results = await searchSMILikeCSV(searchFilters);
-      
-      // Сортировка если указана
-      if (filters.sortBy === 'price_asc') {
-        results.sort((a, b) => (a.price || 0) - (b.price || 0));
-      } else if (filters.sortBy === 'price_desc') {
-        results.sort((a, b) => (b.price || 0) - (a.price || 0));
-      } else if (filters.sortBy === 'audience_desc') {
-        results.sort((a, b) => (b.audienceNumber || 0) - (a.audienceNumber || 0));
-      }
-      
-      return results;
-      
-    } catch (error) {
-      console.error('Ошибка поиска с фильтрами:', error);
-      return [];
-    }
-  }
-  
-  // Выполнить расширенный поиск
-  async performExtendedSearch(chatId, filters) {
-    const loadingMsg = await this.bot.sendMessage(chatId, '🔍 *Выполняю поиск по вашим фильтрам...*', {
-      parse_mode: 'Markdown'
-    });
-    
-    try {
-      // Преобразуем фильтры для функции searchSMILikeCSV
-      const searchFilters = {};
-      
-      if (filters.category) searchFilters.category = filters.category;
-      if (filters.country) searchFilters.country = filters.country;
-      if (filters.backdated !== undefined && filters.backdated !== null) {
-        searchFilters.backdated = filters.backdated;
-      }
-      
-      if (filters.price) {
-        if (filters.price.max) searchFilters.maxPrice = filters.price.max;
-        if (filters.price.min) searchFilters.minPrice = filters.price.min;
-      }
-      
-      if (filters.audience) {
-        if (filters.audience.max) searchFilters.maxAudience = filters.audience.max;
-        if (filters.audience.min) searchFilters.minAudience = filters.audience.min;
-      }
-      
-      const results = await searchSMILikeCSV(searchFilters);
-      
-      await this.bot.deleteMessage(chatId, loadingMsg.message_id);
-      
-      if (results.length === 0) {
-        await this.bot.sendMessage(chatId, 
-          `😔 *По вашим критериям ничего не найдено.*\n\n` +
-          'Попробуйте изменить фильтры или используйте быстрый поиск.',
-          {
-            parse_mode: 'Markdown',
-            ...keyboards.getAfterSearchMenu()
+      const limit = 5;
+      const offset = (page - 1) * limit;
+
+      // Ищем СМИ по категории
+      const smiList = await SMI.findAll({
+        where: {
+          category: {
+            [Op.like]: `%${category}%`
           }
-        );
-        stateManager.resetState(chatId);
-        return;
-      }
-      
-      // Сохраняем результаты для пагинации
-      const searchId = Date.now().toString();
-      this.csvSearches.set(`${chatId}_${searchId}`, {
-        results: results,
-        filterName: 'Результаты расширенного поиска',
-        createdAt: Date.now()
-      });
-      
-      // Показываем первую страницу с inline-пагинацией
-      await this.showResultsPage(chatId, searchId, 1);
-      
-    } catch (error) {
-      console.error('Ошибка расширенного поиска:', error);
-      await this.bot.deleteMessage(chatId, loadingMsg.message_id);
-      await this.bot.sendMessage(chatId, '⚠️ Ошибка поиска. Попробуйте позже.');
-    }
-  }
-  
-  // Показать рекомендации
-  async showRecommendations(chatId) {
-    try {
-      const loadingMsg = await this.bot.sendMessage(chatId, '🎯 *Подбираю рекомендации...*', {
-        parse_mode: 'Markdown'
-      });
-      
-      // Получаем несколько вариантов для рекомендаций
-      const results = [];
-      
-      // 1. Популярные бизнес-СМИ
-      const businessSMI = await searchSMILikeCSV({ category: 'Business' });
-      if (businessSMI.length > 0) results.push(...businessSMI.slice(0, 3));
-      
-      // 2. Бюджетные варианты
-      const budgetSMI = await searchSMILikeCSV({ maxPrice: 50000 });
-      if (budgetSMI.length > 0) results.push(...budgetSMI.slice(0, 2));
-      
-      // 3. Российские СМИ
-      const russianSMI = await searchSMILikeCSV({ country: 'Russia' });
-      if (russianSMI.length > 0) results.push(...russianSMI.slice(0, 2));
-      
-      await this.bot.deleteMessage(chatId, loadingMsg.message_id);
-      
-      if (results.length === 0) {
-        await this.bot.sendMessage(chatId, 
-          '😔 *Не удалось сформировать рекомендации.*\n\n' +
-          'Попробуйте использовать расширенный поиск.',
-          {
-            parse_mode: 'Markdown',
-            ...keyboards.getQuickSearchMenu()
-          }
-        );
-        return;
-      }
-      
-      // Удаляем дубликаты
-      const uniqueResults = Array.from(
-        new Map(results.map(item => [item.name, item])).values()
-      );
-      
-      // Сохраняем результаты для пагинации
-      const searchId = Date.now().toString();
-      this.csvSearches.set(`${chatId}_${searchId}`, {
-        results: uniqueResults,
-        filterName: 'Рекомендованные СМИ',
-        createdAt: Date.now()
-      });
-      
-      // Показываем первую страницу с inline-пагинацией
-      await this.showResultsPage(chatId, searchId, 1);
-      
-    } catch (error) {
-      console.error('Ошибка рекомендаций:', error);
-      await this.bot.sendMessage(chatId, '⚠️ Ошибка формирования рекомендаций.');
-    }
-  }
-  
-  // Показать страницу результатов
-  async showResultsPage(chatId, searchId, page) {
-    const searchKey = `${chatId}_${searchId}`;
-    const searchData = this.csvSearches.get(searchKey);
-    
-    if (!searchData) {
-      await this.bot.sendMessage(chatId, '❌ Результаты поиска устарели. Пожалуйста, выполните новый поиск.');
-      return;
-    }
-    
-    const { results, filterName } = searchData;
-    const ITEMS_PER_PAGE = 5;
-    const totalPages = Math.ceil(results.length / ITEMS_PER_PAGE);
-    
-    if (page < 1 || page > totalPages) {
-      page = 1;
-    }
-    
-    const startIndex = (page - 1) * ITEMS_PER_PAGE;
-    const endIndex = Math.min(startIndex + ITEMS_PER_PAGE, results.length);
-    const pageResults = results.slice(startIndex, endIndex);
-    
-    let message = `🔍 *${filterName}*\n`;
-    message += `📊 Найдено: ${results.length} СМИ | Страница ${page}/${totalPages}\n\n`;
-    
-    pageResults.forEach((item, index) => {
-      const globalIndex = startIndex + index + 1;
-      
-      const categoryEmoji = this.getCategoryEmoji(item.category);
-      const countryFlag = this.getCountryFlag(item.country);
-      
-      // Очищаем данные от кавычек
-      const cleanWebsite = item.website ? item.website.replace(/"/g, '') : '';
-      const cleanContact = item.contact ? item.contact.replace(/"/g, '') : '';
-      const cleanDescription = item.description ? item.description.replace(/"/g, '') : '';
-      
-      message += `*${globalIndex}. ${item.name}*\n`;
-      message += `   ${categoryEmoji} *Категория:* ${item.category || 'Без категории'}\n`;
-      message += `   ${countryFlag} *Страна:* ${item.country || 'Не указана'}\n`;
-      
-      if (item.audience) {
-        message += `   👥 *Аудитория:* ${item.audience}\n`;
-      }
-      
-      message += `   💰 *Цена:* ${item.price ? item.price.toLocaleString('ru-RU') + ' руб.' : 'цена по запросу'}\n`;
-      
-      if (cleanWebsite && cleanWebsite.trim() !== '') {
-        message += `   🌐 *Сайт:* ${cleanWebsite}\n`;
-      }
-      
-      if (cleanContact && cleanContact.trim() !== '') {
-        message += `   📞 *Контакты:* ${cleanContact}\n`;
-      }
-      
-      if (cleanDescription && cleanDescription.trim() !== '') {
-        const shortDesc = cleanDescription.length > 100 ? 
-          cleanDescription.substring(0, 100) + '...' : cleanDescription;
-        message += `   📝 *Описание:* ${shortDesc}\n`;
-      }
-      
-      message += '\n';
-    });
-    
-    // Создаем inline-клавиатуру с пагинацией
-    const inlineKeyboard = [];
-    
-    // Кнопки пагинации
-    const paginationRow = [];
-    
-    if (page > 1) {
-      paginationRow.push({
-        text: '◀️ Назад',
-        callback_data: `page_${searchId}_${page - 1}`
-      });
-    }
-    
-    paginationRow.push({
-      text: `${page}/${totalPages}`,
-      callback_data: 'page_info'
-    });
-    
-    if (page < totalPages) {
-      paginationRow.push({
-        text: 'Вперед ▶️',
-        callback_data: `page_${searchId}_${page + 1}`
-      });
-    }
-    
-    if (paginationRow.length > 0) {
-      inlineKeyboard.push(paginationRow);
-    }
-    
-    // Кнопки действий (используем функцию из keyboards.js если есть, иначе дефолтную)
-    const firstItemId = pageResults[0]?.id;
-    
-    if (keyboards.getPagination) {
-      const paginationMarkup = keyboards.getPagination(page, totalPages, searchId, firstItemId);
-      
-      if (page === 1) {
-        // Отправляем новое сообщение
-        const sentMessage = await this.bot.sendMessage(chatId, message, {
-          parse_mode: 'Markdown',
-          ...paginationMarkup
-        });
-        
-        // Сохраняем ID сообщения для редактирования
-        searchData.messageId = sentMessage.message_id;
-        this.csvSearches.set(searchKey, searchData);
-      } else {
-        // Редактируем существующее сообщение
-        try {
-          await this.bot.editMessageText(message, {
-            chat_id: chatId,
-            message_id: searchData.messageId,
-            parse_mode: 'Markdown',
-            ...paginationMarkup
-          });
-        } catch (error) {
-          // Если не удалось отредактировать, отправляем новое
-          const sentMessage = await this.bot.sendMessage(chatId, message, {
-            parse_mode: 'Markdown',
-            ...paginationMarkup
-          });
-          
-          searchData.messageId = sentMessage.message_id;
-          this.csvSearches.set(searchKey, searchData);
-        }
-      }
-    } else {
-      // Дефолтная пагинация (если функция getPagination не существует)
-      inlineKeyboard.push([
-        {
-          text: '🏠 Главное меню',
-          callback_data: 'main_menu'
         },
-        {
-          text: '🔄 Новый поиск',
-          callback_data: 'new_search'
-        }
-      ]);
-      
-      // Сохраняем ID сообщения для редактирования
-      const searchDataWithMessage = { ...searchData, messageId: null };
-      
-      if (page === 1) {
-        // Отправляем новое сообщение
-        const sentMessage = await this.bot.sendMessage(chatId, message, {
-          parse_mode: 'Markdown',
-          reply_markup: { inline_keyboard: inlineKeyboard }
-        });
-        
-        searchDataWithMessage.messageId = sentMessage.message_id;
-        this.csvSearches.set(searchKey, searchDataWithMessage);
-      } else {
-        // Редактируем существующее сообщение
-        try {
-          await this.bot.editMessageText(message, {
-            chat_id: chatId,
-            message_id: searchData.messageId,
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: inlineKeyboard }
-          });
-        } catch (error) {
-          // Если не удалось отредактировать, отправляем новое
-          const sentMessage = await this.bot.sendMessage(chatId, message, {
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: inlineKeyboard }
-          });
-          
-          searchDataWithMessage.messageId = sentMessage.message_id;
-          this.csvSearches.set(searchKey, searchDataWithMessage);
-        }
+        limit: limit + 1, // +1 чтобы узнать есть ли следующая страница
+        offset: offset,
+        order: [['rating', 'DESC']]
+      });
+
+      const hasNextPage = smiList.length > limit;
+      const currentItems = hasNextPage ? smiList.slice(0, limit) : smiList;
+      const totalPages = Math.ceil((await SMI.count({
+        where: { category: { [Op.like]: `%${category}%` } }
+      })) / limit);
+
+      if (currentItems.length === 0) {
+        return this.bot.sendMessage(
+          chatId,
+          `😔 По категории "${category}" ничего не найдено.\nПопробуйте другую категорию.`,
+          keyboards.getBackKeyboard()
+        );
       }
+
+      // Отправляем первый результат с пагинацией
+      const smi = currentItems[0];
+      const message = this.formatSMIMessage(smi, page, totalPages);
+      const paginationKeyboard = keyboards.getPaginationKeyboard(page, totalPages, category);
+      const actionsKeyboard = keyboards.getSMIActionsKeyboard(smi.id, false);
+
+      // Комбинируем клавиатуры
+      const combinedKeyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            ...paginationKeyboard.reply_markup.inline_keyboard,
+            ...actionsKeyboard.reply_markup.inline_keyboard
+          ]
+        }
+      };
+
+      await this.bot.sendMessage(chatId, message, {
+        parse_mode: 'Markdown',
+        ...combinedKeyboard
+      });
+
+    } catch (error) {
+      console.error('Ошибка поиска по категории:', error);
+      await this.bot.sendMessage(
+        chatId,
+        '❌ Ошибка при поиске СМИ. Попробуйте позже.',
+        keyboards.getBackKeyboard()
+      );
     }
   }
-  
-  // Очистка старых результатов поиска
-  cleanupOldSearches() {
-    const now = Date.now();
-    const oneHour = 60 * 60 * 1000;
-    
-    for (const [key, data] of this.csvSearches.entries()) {
-      if (now - data.createdAt > oneHour) {
-        this.csvSearches.delete(key);
-      }
-    }
+
+  async handlePagination(chatId, page, queryId) {
+    await this.searchByCategory(chatId, queryId, page);
   }
-  
-  // Показать профиль
-  async showProfile(chatId) {
-    const message = `👤 *ЛИЧНЫЙ КАБИНЕТ*\n\n` +
-      `📊 *Статистика:*\n` +
-      `• Функционал в разработке\n\n` +
-      `Выберите действие:`;
-    
-    const isAdmin = this.isAdmin(chatId);
-    
-    await this.bot.sendMessage(chatId, message, {
-      parse_mode: 'Markdown',
-      ...keyboards.getProfileMenu()
-    });
+
+  formatSMIMessage(smi, currentPage, totalPages) {
+    return `📰 *${smi.name || 'Название не указано'}*\n\n` +
+           `📊 *Рейтинг:* ${smi.rating || 'нет'}/10\n` +
+           `🏷️ *Категория:* ${smi.category || 'не указана'}\n` +
+           `📍 *Регион:* ${smi.region || 'не указан'}\n` +
+           `👥 *Аудитория:* ${smi.audience || 'нет данных'}\n` +
+           `💬 *Язык:* ${smi.language || 'не указан'}\n` +
+           `💰 *Стоимость:* ${smi.price || 'не указана'}\n` +
+           `📞 *Контакты:* ${smi.contacts ? 'есть' : 'нет'}\n` +
+           `🌐 *Сайт:* ${smi.website ? 'есть' : 'нет'}\n\n` +
+           `📄 *Описание:*\n${smi.description || 'Описание отсутствует'}\n\n` +
+           `📑 *Страница ${currentPage} из ${totalPages}*`;
   }
-  
-  // Обработка личного кабинета
-  async handleProfile(chatId, text, state) {
-    const isAdmin = this.isAdmin(chatId);
-    
-    switch(text) {
-      case '📊 Статистика':
-        await this.bot.sendMessage(chatId, '📊 *СТАТИСТИКА*\n\nФункционал в разработке', {
-          parse_mode: 'Markdown',
-          ...keyboards.getProfileMenu()
-        });
-        break;
-        
-      case '🕐 История запросов':
-        await this.bot.sendMessage(chatId, '🕐 *ИСТОРИЯ ЗАПРОСОВ*\n\nФункционал в разработке', {
-          parse_mode: 'Markdown',
-          ...keyboards.getProfileMenu()
-        });
-        break;
-        
-      case '⬅️ НАЗАД':
-      case '🏠 ГЛАВНОЕ МЕНЮ':
-        stateManager.resetState(chatId);
-        await this.bot.sendMessage(chatId, 'Главное меню:', 
-          keyboards.getMainMenu(isAdmin));
-        break;
-    }
-  }
-  
-  // Показать избранное
-  async showFavorites(chatId) {
-    const isAdmin = this.isAdmin(chatId);
-    
-    await this.bot.sendMessage(chatId, '⭐ *ИЗБРАННОЕ*\n\nФункционал в разработке', {
-      parse_mode: 'Markdown',
-      ...keyboards.getMainMenu(isAdmin)
-    });
-  }
-  
-  // Добавить в избранное
-  async addToFavorites(chatId, type, itemId) {
+
+  async toggleFavorite(chatId, smiId, messageId) {
     try {
       const user = await User.findOne({ where: { telegramId: chatId } });
-      if (!user) return;
-      
-      // Здесь должна быть логика добавления в избранное
-      console.log(`Добавление в избранное: ${type} ${itemId} для пользователя ${chatId}`);
-      
-      // Временное сообщение
-      await this.bot.sendMessage(chatId, '✅ Добавлено в избранное (функционал в разработке)');
-      
-    } catch (error) {
-      console.error('Ошибка добавления в избранное:', error);
-    }
-  }
-  
-  // Показать контакты менеджера
-  async showContactManager(chatId) {
-    const message = `📞 *СВЯЗЬ С МЕНЕДЖЕРОМ*\n\n` +
-      `👤 Ваш менеджер: *Анна Петрова*\n` +
-      `📱 +7 (XXX) XXX-XX-XX\n` +
-      `✉️ manager@mediapro.ru\n` +
-      `🕐 Часы работы: Пн-Пт 10:00-19:00\n\n` +
-      `*Услуги:*\n` +
-      `• Подбор СМИ\n` +
-      `• Консультации\n` +
-      `• Медиапланирование\n\n` +
-      `⬅️ Напишите ваш вопрос в чат.`;
-    
-    const isAdmin = this.isAdmin(chatId);
-    
-    await this.bot.sendMessage(chatId, message, {
-      parse_mode: 'Markdown',
-      ...keyboards.getMainMenu(isAdmin)
-    });
-  }
-  
-  // Показать контакты СМИ
-  async showContactInfo(chatId, type, itemId) {
-    try {
-      const item = await SMI.findByPk(itemId);
-      if (!item) {
-        await this.bot.sendMessage(chatId, '❌ Информация о СМИ не найдена');
+      const smi = await SMI.findByPk(smiId);
+
+      if (!user || !smi) {
         return;
       }
-      
-      const message = `📞 *КОНТАКТНАЯ ИНФОРМАЦИЯ*\n\n` +
-        `*${item.name}*\n` +
-        `📧 Контакт: ${item.contact || 'запросить у менеджера'}\n` +
-        `🌐 Сайт: ${item.website || 'не указан'}\n` +
-        `📍 Страна: ${item.country || 'не указана'}\n` +
-        `📊 Аудитория: ${item.audience || 'не указана'}\n` +
-        `💰 Цена: ${item.price ? item.price.toLocaleString('ru-RU') + ' руб.' : 'цена по запросу'}`;
-      
-      await this.bot.sendMessage(chatId, message, {
-        parse_mode: 'Markdown'
-      });
-      
+
+      // Проверяем, есть ли уже в избранном
+      const favorites = JSON.parse(user.favorites || '[]');
+      const index = favorites.indexOf(smiId);
+
+      if (index === -1) {
+        // Добавляем в избранное
+        favorites.push(smiId);
+        await user.update({ favorites: JSON.stringify(favorites) });
+        
+        // Обновляем inline кнопку
+        const updatedKeyboard = keyboards.getSMIActionsKeyboard(smiId, true);
+        this.bot.editMessageReplyMarkup(updatedKeyboard.reply_markup, {
+          chat_id: chatId,
+          message_id: messageId
+        });
+        
+        this.bot.sendMessage(chatId, '✅ Добавлено в избранное!');
+      } else {
+        // Удаляем из избранного
+        favorites.splice(index, 1);
+        await user.update({ favorites: JSON.stringify(favorites) });
+        
+        // Обновляем inline кнопку
+        const updatedKeyboard = keyboards.getSMIActionsKeyboard(smiId, false);
+        this.bot.editMessageReplyMarkup(updatedKeyboard.reply_markup, {
+          chat_id: chatId,
+          message_id: messageId
+        });
+        
+        this.bot.sendMessage(chatId, '❌ Удалено из избранного');
+      }
     } catch (error) {
-      console.error('Ошибка показа контактов:', error);
-      await this.bot.sendMessage(chatId, '⚠️ Не удалось загрузить контактную информацию');
+      console.error('Ошибка обновления избранного:', error);
     }
   }
-  
-  // Экспорт в CSV
-  async exportToCSV(chatId, searchId) {
-    const searchKey = `${chatId}_${searchId}`;
-    const searchData = this.csvSearches.get(searchKey);
-    
-    if (!searchData || !searchData.results || searchData.results.length === 0) {
-      await this.bot.sendMessage(chatId, '❌ Нет данных для экспорта');
-      return;
-    }
-    
+
+  async showContacts(chatId, smiId) {
     try {
-      // Создаем CSV контент
-      const headers = ['Название', 'Категория', 'Страна', 'Аудитория', 'Цена', 'Контакты', 'Сайт', 'Описание', 'Backdated'];
-      let csvContent = headers.join(',') + '\n';
-      
-      searchData.results.forEach(item => {
-        const row = [
-          `"${(item.name || '').replace(/"/g, '""')}"`,
-          `"${item.category || ''}"`,
-          `"${item.country || ''}"`,
-          `"${item.audience || ''}"`,
-          item.price || 0,
-          `"${item.contact || ''}"`,
-          `"${item.website || ''}"`,
-          `"${(item.description || '').replace(/"/g, '""')}"`,
-          item.backdated ? 'Да' : 'Нет'
-        ];
-        csvContent += row.join(',') + '\n';
-      });
-      
-      // Создаем временный файл
-      const fileName = `export_${chatId}_${Date.now()}.csv`;
-      const filePath = `./temp_${fileName}`;
-      
-      fs.writeFileSync(filePath, '\uFEFF' + csvContent, 'utf8');
-      
-      // Отправляем файл
-      await this.bot.sendDocument(
-        chatId,
-        filePath,
-        {},
-        {
-          filename: fileName,
-          caption: `📥 *ЭКСПОРТ РЕЗУЛЬТАТОВ ПОИСКА*\n\n` +
-                   `✅ Экспортировано: *${searchData.results.length}* записей\n` +
-                   `🔍 Поиск: ${searchData.filterName || 'Результаты поиска'}`,
-          parse_mode: 'Markdown'
-        }
-      );
-      
-      // Удаляем временный файл
-      setTimeout(() => {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-      }, 5000);
-      
+      const smi = await SMI.findByPk(smiId);
+      if (smi && smi.contacts) {
+        await this.bot.sendMessage(
+          chatId,
+          `📞 *Контакты ${smi.name}:*\n\n${smi.contacts}`,
+          { parse_mode: 'Markdown' }
+        );
+      } else {
+        await this.bot.sendMessage(chatId, '❌ Контакты не указаны');
+      }
     } catch (error) {
-      console.error('Ошибка экспорта:', error);
-      await this.bot.sendMessage(chatId, '❌ Ошибка при экспорте данных');
+      console.error('Ошибка получения контактов:', error);
+      await this.bot.sendMessage(chatId, '❌ Ошибка получения контактов');
     }
   }
-  
-  // Показать админ-меню
+
+  async showWebsite(chatId, smiId) {
+    try {
+      const smi = await SMI.findByPk(smiId);
+      if (smi && smi.website) {
+        await this.bot.sendMessage(
+          chatId,
+          `🌐 *Сайт ${smi.name}:*\n\n${smi.website}`,
+          { parse_mode: 'Markdown' }
+        );
+      } else {
+        await this.bot.sendMessage(chatId, '❌ Сайт не указан');
+      }
+    } catch (error) {
+      console.error('Ошибка получения сайта:', error);
+      await this.bot.sendMessage(chatId, '❌ Ошибка получения сайта');
+    }
+  }
+
+  async showFavorites(chatId) {
+    try {
+      const user = await User.findOne({ where: { telegramId: chatId } });
+      if (!user) {
+        return this.bot.sendMessage(chatId, '❌ Пользователь не найден');
+      }
+
+      const favorites = JSON.parse(user.favorites || '[]');
+      
+      if (favorites.length === 0) {
+        return this.bot.sendMessage(
+          chatId,
+          '⭐ *ВАШЕ ИЗБРАННОЕ*\n\nВы пока ничего не добавили в избранное.',
+          {
+            parse_mode: 'Markdown',
+            ...keyboards.getBackKeyboard()
+          }
+        );
+      }
+
+      // Получаем информацию о первых 5 избранных СМИ
+      const smiList = await SMI.findAll({
+        where: { id: favorites.slice(0, 5) }
+      });
+
+      let message = '⭐ *ВАШЕ ИЗБРАННОЕ*\n\n';
+      smiList.forEach((smi, index) => {
+        message += `${index + 1}. *${smi.name}*\n`;
+        message += `   Категория: ${smi.category || 'не указана'}\n`;
+        message += `   Рейтинг: ${smi.rating || 'нет'}/10\n\n`;
+      });
+
+      if (favorites.length > 5) {
+        message += `\n...и еще ${favorites.length - 5} СМИ`;
+      }
+
+      await this.bot.sendMessage(chatId, message, {
+        parse_mode: 'Markdown',
+        ...keyboards.getBackKeyboard()
+      });
+
+    } catch (error) {
+      console.error('Ошибка показа избранного:', error);
+      await this.bot.sendMessage(
+        chatId,
+        '❌ Ошибка загрузки избранного',
+        keyboards.getBackKeyboard()
+      );
+    }
+  }
+
+  async showProfile(chatId) {
+    try {
+      const user = await User.findOne({ where: { telegramId: chatId } });
+      const favorites = JSON.parse(user?.favorites || '[]');
+      const isAdmin = this.isAdmin(chatId);
+
+      let message = `👤 *ЛИЧНЫЙ КАБИНЕТ*\n\n`;
+      message += `🆔 ID: ${chatId}\n`;
+      message += `👤 Имя: ${user?.firstName || 'Не указано'}\n`;
+      message += `📅 Регистрация: ${user ? new Date(user.createdAt).toLocaleDateString('ru-RU') : 'Нет данных'}\n`;
+      message += `⭐ Избранное: ${favorites.length} СМИ\n`;
+      message += `👑 Статус: ${isAdmin ? 'Администратор' : 'Пользователь'}\n\n`;
+      message += `_Используйте кнопку "Назад" для возврата в меню_`;
+
+      await this.bot.sendMessage(chatId, message, {
+        parse_mode: 'Markdown',
+        ...keyboards.getBackKeyboard()
+      });
+    } catch (error) {
+      console.error('Ошибка показа профиля:', error);
+      await this.bot.sendMessage(
+        chatId,
+        '❌ Ошибка загрузки профиля',
+        keyboards.getBackKeyboard()
+      );
+    }
+  }
+
+  async showContactManager(chatId) {
+    await this.bot.sendMessage(
+      chatId,
+      '📞 *СВЯЗАТЬСЯ С МЕНЕДЖЕРОМ*\n\n' +
+      'Для получения консультации или сотрудничества:\n\n' +
+      '👤 *Менеджер:* @ваш_менеджер\n' +
+      '📧 *Email:* manager@mediapro.com\n' +
+      '☎️ *Телефон:* +7 (XXX) XXX-XX-XX\n\n' +
+      '_Мы ответим вам в течение рабочего дня_',
+      {
+        parse_mode: 'Markdown',
+        ...keyboards.getBackKeyboard()
+      }
+    );
+  }
+
   async showAdminMenu(chatId) {
+    stateManager.updateState(chatId, {
+      currentSection: 'admin'
+    });
+
+    await this.bot.sendMessage(
+      chatId,
+      '⚙️ *АДМИН-ПАНЕЛЬ*\n\nВыберите действие:',
+      {
+        parse_mode: 'Markdown',
+        ...keyboards.getAdminPanel()
+      }
+    );
+  }
+
+  async showAdminStats(chatId) {
     try {
       const userCount = await User.count();
       const smiCount = await SMI.count();
-      
-      const message = `⚙️ *АДМИНИСТРАТОРСКАЯ ПАНЕЛЬ*\n\n` +
-        `📊 Статистика:\n` +
-        `• Пользователей: ${userCount}\n` +
-        `• СМИ в базе: ${smiCount}\n\n` +
-        `*Доступные команды:*\n` +
-        `/import - Импорт данных из CSV\n` +
-        `/fixtable - Исправить таблицу\n` +
-        `/stats - Статистика системы\n` +
-        `/check - Проверка системы`;
-      
-      const isAdmin = this.isAdmin(chatId);
-      
-      await this.bot.sendMessage(chatId, message, {
-        parse_mode: 'Markdown',
-        ...keyboards.getMainMenu(isAdmin)
+      const activeToday = await User.count({
+        where: {
+          lastActivity: {
+            [Op.gte]: new Date(new Date() - 24 * 60 * 60 * 1000)
+          }
+        }
       });
-      
+
+      await this.bot.sendMessage(
+        chatId,
+        `📊 *СТАТИСТИКА СИСТЕМЫ*\n\n` +
+        `👥 Пользователей: ${userCount}\n` +
+        `📰 Записей СМИ: ${smiCount}\n` +
+        `🔄 Активных за 24ч: ${activeToday}\n` +
+        `⏰ Сервер: ${new Date().toLocaleString('ru-RU')}`,
+        {
+          parse_mode: 'Markdown',
+          ...keyboards.getBackKeyboard()
+        }
+      );
     } catch (error) {
-      console.error('Ошибка показа админ-меню:', error);
-      await this.bot.sendMessage(chatId, '⚠️ Ошибка загрузки админ-панели');
+      console.error('Ошибка статистики:', error);
+      await this.bot.sendMessage(chatId, '❌ Ошибка получения статистики');
     }
+  }
+
+  async startCSVImport(chatId) {
+    try {
+      await this.bot.sendMessage(
+        chatId,
+        '📁 *ИМПОРТ CSV*\n\n' +
+        'Начинаю импорт данных из CSV файла...\n' +
+        'Это может занять несколько минут.',
+        { parse_mode: 'Markdown' }
+      );
+
+      const result = await importSMIFromCSV('smi-import-fixed.csv');
+      
+      await this.bot.sendMessage(
+        chatId,
+        `✅ *ИМПОРТ ЗАВЕРШЕН*\n\n` +
+        `📊 Результаты:\n` +
+        `• Обработано: ${result.processed} записей\n` +
+        `• Добавлено: ${result.added} новых\n` +
+        `• Обновлено: ${result.updated} существующих\n` +
+        `• Ошибок: ${result.errors}\n\n` +
+        `⏰ Время: ${result.duration} сек.`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (error) {
+      console.error('Ошибка импорта:', error);
+      await this.bot.sendMessage(
+        chatId,
+        `❌ *ОШИБКА ИМПОРТА*\n\n${error.message}`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+  }
+
+  async startBroadcast(chatId) {
+    await this.bot.sendMessage(
+      chatId,
+      '📢 *РАССЫЛКА*\n\n' +
+      'Функционал рассылки в разработке.\n' +
+      'Скоро здесь можно будет отправлять сообщения всем пользователям.',
+      {
+        parse_mode: 'Markdown',
+        ...keyboards.getBackKeyboard()
+      }
+    );
+  }
+
+  async showSystemCheck(chatId) {
+    try {
+      const userCount = await User.count();
+      const smiCount = await SMI.count();
+      const csvExists = fs.existsSync('smi-import-fixed.csv');
+      const csvSize = csvExists ? Math.round(fs.statSync('smi-import-fixed.csv').size / 1024 / 1024 * 100) / 100 : 0;
+
+      await this.bot.sendMessage(
+        chatId,
+        `✅ *СИСТЕМА РАБОТАЕТ НОРМАЛЬНО*\n\n` +
+        `🗄️ База данных: ✅ Подключена\n` +
+        `📰 Записей СМИ: ${smiCount}\n` +
+        `👥 Пользователей: ${userCount}\n` +
+        `📁 CSV файл: ${csvExists ? '✅ Найден' : '❌ Отсутствует'}\n` +
+        `📊 Размер CSV: ${csvSize} MB\n\n` +
+        `🎯 Доступные команды:\n` +
+        `/search - Поиск СМИ\n` +
+        `/stats - Статистика\n` +
+        `/import - Импорт CSV (админ)\n` +
+        `/check - Проверка системы`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (error) {
+      console.error('Ошибка проверки системы:', error);
+      await this.bot.sendMessage(
+        chatId,
+        `❌ *ОШИБКА ПРОВЕРКИ СИСТЕМЫ*\n\n${error.message}`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+  }
+
+  async showStats(chatId) {
+    try {
+      const userCount = await User.count();
+      const smiCount = await SMI.count();
+
+      await this.bot.sendMessage(
+        chatId,
+        `📊 *СТАТИСТИКА БОТА*\n\n` +
+        `📰 Всего СМИ в базе: ${smiCount}\n` +
+        `👥 Зарегистрировано пользователей: ${userCount}\n` +
+        `⏰ Обновлено: ${new Date().toLocaleString('ru-RU')}`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (error) {
+      console.error('Ошибка статистики:', error);
+      await this.bot.sendMessage(chatId, '❌ Ошибка получения статистики');
+    }
+  }
+
+  async registerUser(chatId, userInfo) {
+    try {
+      const [user, created] = await User.findOrCreate({
+        where: { telegramId: chatId },
+        defaults: {
+          firstName: userInfo.first_name,
+          lastName: userInfo.last_name,
+          username: userInfo.username,
+          languageCode: userInfo.language_code,
+          lastActivity: new Date()
+        }
+      });
+
+      if (!created) {
+        await user.update({
+          lastActivity: new Date(),
+          firstName: userInfo.first_name,
+          lastName: userInfo.last_name,
+          username: userInfo.username
+        });
+      }
+
+      console.log(`👤 Пользователь ${created ? 'зарегистрирован' : 'обновлен'}: ${chatId}`);
+    } catch (error) {
+      console.error('Ошибка регистрации пользователя:', error);
+    }
+  }
+
+  isAdmin(chatId) {
+    const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',').map(id => id.trim()) : [];
+    return adminIds.includes(chatId.toString());
+  }
+
+  startWebhook(webhookPath, port) {
+    const webhookUrl = process.env.RENDER_EXTERNAL_URL || 
+                      process.env.RAILWAY_STATIC_URL || 
+                      process.env.REPLIT_URL || 
+                      `https://${process.env.RENDER_SERVICE_NAME}.onrender.com`;
+
+    const fullWebhookUrl = `${webhookUrl}${webhookPath}`;
+    
+    console.log(`🔗 Устанавливаю вебхук: ${fullWebhookUrl}`);
+    
+    this.bot.setWebHook(fullWebhookUrl)
+      .then(() => {
+        console.log('✅ Вебхук установлен:', fullWebhookUrl);
+        console.log('✅ Бот запущен в режиме вебхука!');
+      })
+      .catch(err => {
+        console.error('❌ Ошибка установки вебхука:', err.message);
+      });
   }
 }
 
-// Создаем и запускаем бота
-if (require.main === module) {
-  const useWebhook = process.env.USE_WEBHOOK === 'true' || 
-                     process.env.REPLIT_URL || 
-                     process.env.RAILWAY_URL || 
-                     false;
-  
-  console.log(`🔄 Режим запуска: ${useWebhook ? 'Вебхук' : 'Polling'}`);
-  console.log(`🌐 PORT: ${process.env.PORT || 3000}`);
-  console.log(`⚙️ USE_WEBHOOK: ${process.env.USE_WEBHOOK || 'false'}`);
-  
-  initDatabase().then(() => {
-    console.log('✅ База данных готова к работе');
-    
-    const prBot = new PRBot(useWebhook);
-    
-    if (useWebhook) {
-      console.log("🚀 Запуск бота в режиме вебхука...");
-      prBot.startWebhook('/webhook', process.env.PORT || 3000);
-      console.log("✅ Бот запущен в режиме вебхука!");
-    } else {
-      console.log("✅ Бот успешно запущен локально (polling)!");
-    }
-  }).catch(err => {
-    console.error('❌ Ошибка инициализации БД:', err.message);
-    console.log('⚠️ Бот запускается без базы данных...');
-    
-    const prBot = new PRBot(useWebhook);
-    
-    if (useWebhook) {
-      console.log("🚀 Запуск бота в режиме вебхука...");
-      prBot.startWebhook('/webhook', process.env.PORT || 3000);
-      console.log("✅ Бот запущен в режиме вебхука!");
-    } else {
-      console.log("✅ Бот успешно запущен локально (polling)!");
-    }
-  });
-} else {
-  module.exports = PRBot;
-}
+module.exports = PRBot;
