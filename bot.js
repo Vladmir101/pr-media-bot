@@ -10,7 +10,7 @@ class PRBot {
     const options = {
       polling: !useWebhook,
       webHook: useWebhook ? {
-        port: process.env.PORT || 3000
+        port: process.env.PORT || 3600  // <-- 3600 вместо 3000
       } : false
     };
 
@@ -76,7 +76,7 @@ class PRBot {
         res.json({ status: 'ok', timestamp: new Date().toISOString() });
       });
 
-      const port = process.env.PORT || 3000;
+      const port = process.env.PORT || 3600;  // <-- 3600 вместо 3000
       app.listen(port, () => {
         console.log(`🚀 Сервер запущен на порту ${port}`);
         console.log(`🌐 Вебхук: /webhook`);
@@ -322,7 +322,7 @@ if (require.main === module) {
   const useWebhook = process.env.USE_WEBHOOK === 'true';
   
   console.log(`🔄 Режим запуска: ${useWebhook ? 'Вебхук' : 'Polling'}`);
-  console.log(`🌐 PORT: ${process.env.PORT || 3000}`);
+  console.log(`🌐 PORT: ${process.env.PORT || 3600}`);  // <-- 3600 вместо 3000
 
   initDatabase().then(() => {
     console.log('✅ База данных готова к работе');
