@@ -475,10 +475,11 @@ class PRBot {
             filters.country = 'Russia';
             filterName = 'российские СМИ';
             break;
-          case '🌍 Международные':
-            filters.country = 'USA';
-            filterName = 'международные СМИ';
-            break;
+          // Нужно исправить на:
+case '🌍 Международные':
+  filters.country = 'United States of America';  // ✓ ПРАВИЛЬНО
+  filterName = 'международные СМИ';
+  break;
           case '💰 До 100к':
             filters.maxPrice = 100000;
             filterName = 'до 100,000 руб.';
@@ -1212,9 +1213,9 @@ class PRBot {
           searchTitle = 'Российские СМИ';
           break;
         case '🌍 Международные':
-          filters = { country: 'United States', sortBy: 'audience_desc' };
-          searchTitle = 'Международные СМИ';
-          break;
+  filters = { country: 'United States of America', sortBy: 'audience_desc' };  // ✓ ПРАВИЛЬНО
+  searchTitle = 'Международные СМИ';
+  break;
         case '💰 Бюджетные СМИ':
           filters = { maxPrice: 50000, sortBy: 'price_asc' };
           searchTitle = 'Бюджетные СМИ (до 50K руб.)';
