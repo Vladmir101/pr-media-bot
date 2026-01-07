@@ -61,7 +61,7 @@ class PRBot {
       }
     });
 
-    // Если используется вебхук
+    // Если используется вебхук - ТОЛЬКО УСТАНАВЛИВАЕМ ВЕБХУК
     if (this.useWebhook) {
       const express = require('express');
       const app = express();
@@ -76,15 +76,16 @@ class PRBot {
         res.json({ status: 'ok', timestamp: new Date().toISOString() });
       });
 
-      const port = process.env.PORT || 3001;
-      app.listen(port, () => {
-        console.log(`🚀 Сервер запущен на порту ${port}`);
-        console.log(`🌐 Вебхук: /webhook`);
-        console.log(`🏥 Health check: http://localhost:${port}/health`);
-      });
+      // ВАЖНО: Render сам запускает сервер, НЕ ЗАПУСКАЕМ app.listen()!
+      console.log(`🌐 Вебхук настроен на порту: ${process.env.PORT || 3001}`);
+      console.log(`🏥 Health check будет доступен через Render`);
+      
+      // Экспортируем app для Render
+      module.exports = app;
     }
   }
 
+  // ... остальные методы остаются БЕЗ ИЗМЕНЕНИЙ ...
   async handleMainMenu(chatId, text) {
     const isAdmin = this.isAdmin(chatId);
 
