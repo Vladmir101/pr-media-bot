@@ -153,6 +153,9 @@ class PRBot {
     switch(text) {
       case '📰 ПОДОБРАТЬ СМИ':
         console.log('🔍 Пользователь выбрал ПОДОБРАТЬ СМИ');
+        stateManager.updateState(chatId, {
+          currentSection: 'search'
+        });
         const categoriesKeyboard = keyboards.getSMICategories();
         return this.bot.sendMessage(chatId, '🔍 Выберите тип поиска СМИ:', categoriesKeyboard);
 
@@ -214,9 +217,15 @@ class PRBot {
         if (text === '⚡ Быстрый поиск') {
           await this.showQuickSearch(chatId);
         } else if (text === '🔍 Расширенный поиск') {
-          await this.showAdvancedSearch(chatId);
+          await this.bot.sendMessage(chatId, '🔍 *РАСШИРЕННЫЙ ПОИСК*\n\nФункционал в разработке', {
+            parse_mode: 'Markdown',
+            ...keyboards.getBackKeyboard()
+          });
         } else if (text === '🏆 Премии и конкурсы') {
-          await this.showAwardsSearch(chatId);
+          await this.bot.sendMessage(chatId, '🏆 *ПРЕМИИ И КОНКУРСЫ*\n\nФункционал в разработке', {
+            parse_mode: 'Markdown',
+            ...keyboards.getBackKeyboard()
+          });
         } else if (text === '🔙 Назад') {
           stateManager.clearState(chatId);
           await this.bot.sendMessage(chatId, 'Главное меню:', keyboards.getMainMenu(isAdmin));
@@ -644,7 +653,7 @@ class PRBot {
       chatId,
       '📢 *РАССЫЛКА*\n\n' +
       'Функционал рассылки в разработке.\n' +
-      'Скоро здесь можно будет отправлять сообщения всем пользователям.',
+      'Скоро здесь можно будет отправлять сообщения всем пользователей.',
       {
         parse_mode: 'Markdown',
         ...keyboards.getBackKeyboard()
