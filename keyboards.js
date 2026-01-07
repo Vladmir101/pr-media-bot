@@ -32,6 +32,36 @@ function getMainMenu(isAdmin = false) {
   return menu;
 }
 
+// Личный кабинет / профиль
+function getProfileMenu() {
+  return {
+    reply_markup: {
+      keyboard: [
+        [{ text: '📊 Моя статистика' }],
+        [{ text: '⭐ Избранное' }],
+        [{ text: '⚙️ Настройки' }],
+        [{ text: '🔙 На главную' }]
+      ],
+      resize_keyboard: true
+    }
+  };
+}
+
+// Меню выбора типа поиска
+function getSearchTypeMenu() {
+  return {
+    reply_markup: {
+      keyboard: [
+        [{ text: '📰 Поиск по СМИ' }],
+        [{ text: '🎯 Поиск по тегам' }],
+        [{ text: '🌍 Поиск по регионам' }],
+        [{ text: '🔙 Назад' }]
+      ],
+      resize_keyboard: true
+    }
+  };
+}
+
 // Категории СМИ для поиска
 function getSMICategories() {
   return {
@@ -152,6 +182,8 @@ function getAdminPanel() {
 // Экспорт всех функций
 module.exports = {
   getMainMenu,
+  getProfileMenu,        // Добавлено
+  getSearchTypeMenu,     // Добавлено
   getSMICategories,
   getQuickSearchCategories,
   getBackKeyboard,
