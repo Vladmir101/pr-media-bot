@@ -3,17 +3,16 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { 
   getCategories, 
-  getSMIByFilters, 
   searchSMIByName,
   getCountryStats,
   getTopSMIByVisits,
   getCategoryStats,
   getCountries,
-  getSMIById,
-  getDatabaseStats
-} = require('./database_updated');
+  getDatabaseStats,
+  formatNumber
+} = require('./database');
 
-const token = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+const token = process.env.BOT_TOKEN;
 if (!token) {
   console.error('❌ Токен бота не найден. Проверьте .env файл');
   process.exit(1);
@@ -22,14 +21,6 @@ if (!token) {
 const bot = new TelegramBot(token, { polling: true });
 
 console.log('🤖 Бот запущен с новой структурой базы!');
-
-// Функция форматирования чисел
-function formatNumber(num) {
-  if (!num) return 'нет данных';
-  if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-  if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-  return num.toString();
-}
 
 // Главное меню
 const mainMenu = {
