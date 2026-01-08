@@ -1,4 +1,4 @@
-// bot.js - Webhook режим для Render
+// bot.js - Полное соответствие ТЗ PR-агентства
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
@@ -11,7 +11,7 @@ if (!token) {
   process.exit(1);
 }
 
-console.log('🚀 Запуск в Webhook режиме для Render...');
+console.log('🚀 PR Media Bot запускается...');
 
 // Создаем Express app и бота
 const app = express();
@@ -19,14 +19,12 @@ const bot = new TelegramBot(token);
 
 app.use(express.json());
 
-// Импорт функций базы
+// Импорт функций базы данных
 const { 
   getCategories, 
-  searchSMIByName,
-  getCountryStats,
-  getTopSMIByVisits,
-  getCategoryStats,
   getCountries,
+  searchSMIByName,
+  getSMIByFilters,
   getDatabaseStats,
   formatNumber
 } = require('./database');
@@ -34,19 +32,13 @@ const {
 // ========== НАСТРОЙКА WEBHOOK ==========
 
 const webhookPath = `/webhook/${token}`;
-
-// Устанавливаем webhook
 const serviceName = process.env.RENDER_SERVICE_NAME || 'pr-media-bot';
 const renderUrl = `https://${serviceName}.onrender.com`;
 const webhookUrl = `${renderUrl}${webhookPath}`;
 
 bot.setWebHook(webhookUrl)
-  .then(() => {
-    console.log(`✅ Webhook установлен: ${webhookUrl}`);
-  })
-  .catch(err => {
-    console.error('❌ Ошибка webhook:', err);
-  });
+  .then(() => console.log(`✅ Webhook установлен: ${webhookUrl}`))
+  .catch(err => console.error('❌ Ошибка webhook:', err));
 
 // Обработчик webhook
 app.post(webhookPath, (req, res) => {
@@ -58,9 +50,9 @@ app.post(webhookPath, (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    service: 'pr-media-bot',
-    database: 'postgresql',
-    records: '105,764+',
+    service: 'PR Media Bot',
+    database: 'PostgreSQL',
+    records: '105,764+ СМИ',
     timestamp: new Date().toISOString() 
   });
 });
@@ -69,15 +61,126 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.send(`
     <h1>🤖 PR Media Bot</h1>
-    <p>База: 105,764+ записей СМИ</p>
-    <p>Режим: Webhook</p>
+    <p>Каталог услуг PR-агентства</p>
+    <p>База: 105,764+ СМИ</p>
     <p><a href="/health">Health Check</a></p>
   `);
 });
 
-// ========== КОМАНДЫ БОТА ==========
+// ========== СОСТОЯНИЯ ПОЛЬЗОВАТЕЛЯ ==========
 
-// Команда /start
+const userStates = {};
+
+// Функции для работы с состояниями
+function setUserState(chatId, section, step = 0, data = {}) {
+  userStates[chatId] = { section, step, data };
+}
+
+function getUserState(chatId) {
+  return userStates[chatId] || { section: null, step: 0, data: {} };
+}
+
+function clearUserState(chatId) {
+  delete userStates[chatId];
+}
+
+// ========== КЛАВИАТУРЫ ПО ТЗ ==========
+
+// Главное меню (ТЗ: уровень 1)
+const getMainMenu = () => ({
+  reply_markup: {
+    keyboard: [
+      ['📰 СМИ'],
+      ['🏆 Награды'],
+      ['👨‍⚖️ Жюри'],
+      ['🤝 Ассоциации'],
+      ['📞 Связаться с менеджером']
+    ],
+    resize_keyboard: true
+  }
+});
+
+// Кнопка "Назад"
+const getBackButton = () => ({
+  reply_markup: {
+    keyboard: [['🔙 Назад']],
+    resize_keyboard: true
+  }
+});
+
+// Меню стран для СМИ (ТЗ: Шаг 1 - выбор страны)
+function getCountriesMenu() {
+  const countries = [
+    '🇺🇸 США', '🇬🇧 Великобритания', '🇩🇪 Германия', '🇫🇷 Франция',
+    '🇮🇹 Италия', '🇪🇸 Испания', '🇦🇪 ОАЭ', '🇰🇿 Казахстан'
+  ];
+  
+  const rows = [];
+  for (let i = 0; i < countries.length; i += 2) {
+    rows.push(countries.slice(i, i + 2));
+  }
+  rows.push(['🔙 Назад']);
+  
+  return {
+    reply_markup: {
+      keyboard: rows,
+      resize_keyboard: true
+    }
+  };
+}
+
+// Меню категорий (ТЗ: Шаг 2 - выбор категории)
+function getCategoriesMenu() {
+  const categories = [
+    '💻 IT', '💼 Бизнес', '🚀 Стартапы', '🔬 Технологии',
+    '💰 Финансы', '₿ Крипто', '📢 Маркетинг', '🎯 PR',
+    '🏥 Медицина', '💅 Красота', '👗 Мода', '🎨 Культура',
+    '🖼️ Искусство', '🎵 Музыка', '🎬 Кино', '⚽ Спорт',
+    '🎓 Образование', '🔭 Наука', '🏠 Недвижимость', '🌿 Lifestyle'
+  ];
+  
+  const rows = [];
+  for (let i = 0; i < categories.length; i += 2) {
+    rows.push(categories.slice(i, i + 2));
+  }
+  rows.push(['🔙 Назад']);
+  
+  return {
+    reply_markup: {
+      keyboard: rows,
+      resize_keyboard: true
+    }
+  };
+}
+
+// Меню посещаемости (ТЗ: Шаг 3 - выбор посещаемости)
+const getVisitsMenu = () => ({
+  reply_markup: {
+    keyboard: [
+      ['📊 До 1 млн/мес'],
+      ['📊 Более 1 млн/мес'],
+      ['🔙 Назад']
+    ],
+    resize_keyboard: true
+  }
+});
+
+// Меню формата публикации (ТЗ: Шаг 4 - формат публикации)
+const getFormatMenu = () => ({
+  reply_markup: {
+    keyboard: [
+      ['📅 Актуальной датой'],
+      ['📅 Задним числом'],
+      ['📅 Не имеет значения'],
+      ['🔙 Назад']
+    ],
+    resize_keyboard: true
+  }
+});
+
+// ========== ОБРАБОТЧИКИ КОМАНД ==========
+
+// Команда /start (ТЗ: Главное меню)
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -85,189 +188,280 @@ bot.onText(/\/start/, async (msg) => {
     const stats = await getDatabaseStats();
     
     const welcomeText = `
-🎯 *Добро пожаловать в MediaPro Bot v2.0!*
+🤖 *Добро пожаловать в PR Media Bot!*
+
+*Каталог услуг PR-агентства:*
+
+📰 *СМИ* - подбор СМИ по стране, категории и посещаемости
+🏆 *Награды* - участие в премиях и конкурсах  
+👨‍⚖️ *Жюри* - участие в жюри мероприятий
+🤝 *Ассоциации* - членство в профессиональных ассоциациях
 
 📊 *База данных:*
-✅ ${stats?.total_smi || '100K+'} СМИ
-✅ ${stats?.countries_count || '175'} стран
-✅ ${stats?.categories_count || '20'} категорий
-✅ ${stats?.backdate_count || '10K+'} с задним числом
+• ${stats?.total_smi || '100K+'} СМИ
+• ${stats?.countries_count || '175'} стран
+• ${stats?.categories_count || '20'} категорий
 
-👇 *Выберите действие:*
+👇 *Выберите раздел каталога:*
     `;
-
-    const mainMenu = {
-      reply_markup: {
-        keyboard: [
-          ['🔍 Поиск СМИ'],
-          ['🌍 Поиск по стране'],
-          ['📊 Топ СМИ'],
-          ['ℹ️ Статистика']
-        ],
-        resize_keyboard: true
-      }
-    };
-
+    
     bot.sendMessage(chatId, welcomeText, {
       parse_mode: 'Markdown',
-      ...mainMenu
+      ...getMainMenu()
     });
+    
   } catch (error) {
     console.error('Ошибка приветствия:', error);
-    bot.sendMessage(chatId, '🎯 Добро пожаловать!', {
-      reply_markup: {
-        keyboard: [['🔍 Поиск СМИ'], ['📊 Топ СМИ']],
-        resize_keyboard: true
-      }
-    });
+    bot.sendMessage(chatId, 
+      '🤖 Добро пожаловать в PR Media Bot!\n\nВыберите раздел каталога:',
+      getMainMenu()
+    );
   }
 });
 
-// Поиск СМИ
-bot.onText(/🔍 Поиск СМИ/, (msg) => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(chatId, 'Введите название СМИ для поиска:', {
-    reply_markup: { remove_keyboard: true }
-  });
-});
+// ========== РАЗДЕЛ "СМИ" (полная логика по ТЗ) ==========
 
-// Поиск по стране
-bot.onText(/🌍 Поиск по стране/, async (msg) => {
+// Шаг 1: Выбор раздела СМИ
+bot.onText(/📰 СМИ/, (msg) => {
   const chatId = msg.chat.id;
+  setUserState(chatId, 'smi', 1);
   
-  try {
-    const countries = await getCountries(10);
-    
-    if (countries.length === 0) {
-      return bot.sendMessage(chatId, '❌ Не удалось загрузить список стран');
+  bot.sendMessage(chatId,
+    '🌍 *ШАГ 1: Выберите страну* (обязательный параметр для СМИ):\n\n' +
+    'Выберите страну из списка или введите название страны:',
+    {
+      parse_mode: 'Markdown',
+      ...getCountriesMenu()
     }
-    
-    let response = '🌍 *Выберите страну:*\n\n';
-    countries.forEach((country, index) => {
-      response += `${index + 1}. ${country}\n`;
-    });
-    
-    bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
-    
-  } catch (error) {
-    console.error('Ошибка стран:', error);
-    bot.sendMessage(chatId, '❌ Ошибка загрузки стран');
-  }
+  );
 });
 
-// Топ СМИ
-bot.onText(/📊 Топ СМИ/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  try {
-    const topSMI = await getTopSMIByVisits(5);
-    
-    if (topSMI.length === 0) {
-      return bot.sendMessage(chatId, '❌ Нет данных о СМИ');
-    }
-    
-    let response = '🏆 *ТОП-5 СМИ:*\n\n';
-    
-    topSMI.forEach((smi, index) => {
-      const visits = formatNumber(smi.visits_per_month);
-      
-      response += `${index + 1}. *${smi.name}*\n`;
-      response += `   🌍 ${smi.country} | ${visits}/мес\n`;
-      response += smi.can_backdate ? '   📅 заднее число\n' : '';
-      response += `\n`;
-    });
-    
-    bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
-    
-  } catch (error) {
-    console.error('Ошибка топа:', error);
-    bot.sendMessage(chatId, '❌ Ошибка загрузки топа');
-  }
-});
-
-// Статистика
-bot.onText(/ℹ️ Статистика/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  try {
-    const stats = await getDatabaseStats();
-    
-    let response = '📊 *СТАТИСТИКА БАЗЫ:*\n\n';
-    
-    if (stats) {
-      response += `📰 Всего СМИ: ${stats.total_smi}\n`;
-      response += `🌍 Стран: ${stats.countries_count}\n`;
-      response += `📂 Категорий: ${stats.categories_count}\n`;
-      response += `📅 С задним числом: ${stats.backdate_count}\n`;
-      response += `👁 Средняя посещаемость: ${formatNumber(stats.avg_visits)}/мес\n`;
-    }
-    
-    bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
-    
-  } catch (error) {
-    console.error('Ошибка статистики:', error);
-    bot.sendMessage(chatId, '❌ Ошибка статистики');
-  }
-});
-
-// Обработка поисковых запросов
+// Шаг 2: Обработка выбора страны
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
+  const state = getUserState(chatId);
   
-  if (!text || text.startsWith('/') || 
-      text === '🔍 Поиск СМИ' || 
-      text === '🌍 Поиск по стране' || 
-      text === '📊 Топ СМИ' || 
-      text === 'ℹ️ Статистика') {
+  if (!text || text.startsWith('/')) return;
+  
+  // Обработка кнопки "Назад"
+  if (text === '🔙 Назад') {
+    handleBackButton(chatId, state);
     return;
   }
   
-  // Поиск по названию
-  if (text.length >= 3) {
-    try {
-      const results = await searchSMIByName(text, 5);
-      
-      if (results.length === 0) {
-        return bot.sendMessage(chatId, `❌ По запросу "${text}" ничего не найдено.`);
-      }
-      
-      let response = `🔍 *Найдено СМИ: ${results.length}*\n\n`;
-      
-      results.forEach((smi, index) => {
-        const visits = smi.visits_per_month ? 
-          `👁 ${formatNumber(smi.visits_per_month)}/мес` : 
-          '👁 нет данных';
-        const backdate = smi.can_backdate ? '📅 заднее число' : '';
+  // Обработка "Связаться с менеджером"
+  if (text === '📞 Связаться с менеджером') {
+    bot.sendMessage(chatId,
+      '📞 *Связь с менеджером*\n\n' +
+      'Для консультации или оформления заявки:\n' +
+      '📧 Email: manager@pr-agency.com\n' +
+      '📱 Телефон: +7 (XXX) XXX-XX-XX\n' +
+      '👤 Telegram: @pr_manager\n\n' +
+      '_Менеджер свяжется с вами в течение рабочего дня_',
+      { parse_mode: 'Markdown', ...getMainMenu() }
+    );
+    clearUserState(chatId);
+    return;
+  }
+  
+  // Логика раздела СМИ по ТЗ
+  if (state.section === 'smi') {
+    switch(state.step) {
+      case 1: // Выбор страны
+        const country = text.replace(/🇺🇸|🇬🇧|🇩🇪|🇫🇷|🇮🇹|🇪🇸|🇦🇪|🇰🇿/g, '').trim();
+        setUserState(chatId, 'smi', 2, { ...state.data, country });
         
-        response += `${index + 1}. *${smi.name}*\n`;
-        response += `   🌍 ${smi.country} | 📂 ${smi.category}\n`;
-        response += `   ${visits} ${backdate}\n\n`;
-      });
-      
-      bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
-      
-    } catch (error) {
-      console.error('Ошибка поиска:', error);
-      bot.sendMessage(chatId, '❌ Ошибка поиска');
+        bot.sendMessage(chatId,
+          `✅ Страна: ${country}\n\n` +
+          '📂 *ШАГ 2: Выберите категорию СМИ* (направление деятельности):',
+          {
+            parse_mode: 'Markdown',
+            ...getCategoriesMenu()
+          }
+        );
+        break;
+        
+      case 2: // Выбор категории
+        const category = text.replace(/💻|💼|🚀|🔬|💰|₿|📢|🎯|🏥|💅|👗|🎨|🖼️|🎵|🎬|⚽|🎓|🔭|🏠|🌿/g, '').trim();
+        setUserState(chatId, 'smi', 3, { ...state.data, category });
+        
+        bot.sendMessage(chatId,
+          `✅ Категория: ${category}\n\n` +
+          '📊 *ШАГ 3: Выберите уровень посещаемости СМИ:*',
+          {
+            parse_mode: 'Markdown',
+            ...getVisitsMenu()
+          }
+        );
+        break;
+        
+      case 3: // Выбор посещаемости
+        let minVisits = null;
+        let maxVisits = null;
+        
+        if (text.includes('До 1 млн')) {
+          maxVisits = 1000000;
+        } else if (text.includes('Более 1 млн')) {
+          minVisits = 1000000;
+        }
+        
+        setUserState(chatId, 'smi', 4, { 
+          ...state.data, 
+          minVisits, 
+          maxVisits 
+        });
+        
+        bot.sendMessage(chatId,
+          `✅ Посещаемость: ${text}\n\n` +
+          '📅 *ШАГ 4: Выберите формат публикации:*',
+          {
+            parse_mode: 'Markdown',
+            ...getFormatMenu()
+          }
+        );
+        break;
+        
+      case 4: // Выбор формата публикации
+        let canBackdate = null;
+        if (text.includes('Актуальной')) canBackdate = false;
+        if (text.includes('Задним')) canBackdate = true;
+        // "Не имеет значения" оставляет null
+        
+        const finalFilters = {
+          ...state.data,
+          canBackdate
+        };
+        
+        // Поиск СМИ по фильтрам
+        await searchAndShowSMI(chatId, finalFilters);
+        clearUserState(chatId);
+        break;
     }
+  }
+  
+  // Разделы Награды, Жюри, Ассоциации (упрощенные по ТЗ)
+  else if (['🏆 Награды', '👨‍⚖️ Жюри', '🤝 Ассоциации'].includes(text)) {
+    const sectionMap = {
+      '🏆 Награды': 'awards',
+      '👨‍⚖️ Жюри': 'jury', 
+      '🤝 Ассоциации': 'associations'
+    };
+    
+    const sectionName = sectionMap[text];
+    setUserState(chatId, sectionName, 1);
+    
+    const messages = {
+      'awards': '🏆 *РАЗДЕЛ "НАГРАДЫ"*\n\nВыберите категорию деятельности:',
+      'jury': '👨‍⚖️ *РАЗДЕЛ "ЖЮРИ"*\n\nВыберите категорию деятельности:',
+      'associations': '🤝 *РАЗДЕЛ "АССОЦИАЦИИ"*\n\nВыберите категорию деятельности:'
+    };
+    
+    bot.sendMessage(chatId, messages[sectionName], {
+      parse_mode: 'Markdown',
+      ...getCategoriesMenu()
+    });
   }
 });
 
-// Запуск сервера
+// Функция поиска и отображения СМИ
+async function searchAndShowSMI(chatId, filters) {
+  try {
+    bot.sendMessage(chatId, '🔍 Ищу СМИ по вашим параметрам...', getBackButton());
+    
+    const results = await getSMIByFilters(filters);
+    
+    if (results.length === 0) {
+      return bot.sendMessage(chatId,
+        '❌ *По выбранным параметрам СМИ не найдено.*\n\n' +
+        'Попробуйте изменить условия поиска:',
+        {
+          parse_mode: 'Markdown',
+          ...getMainMenu()
+        }
+      );
+    }
+    
+    // Лимит 10 результатов
+    const displayResults = results.slice(0, 10);
+    
+    let response = `✅ *Найдено СМИ: ${results.length}*\n\n`;
+    
+    displayResults.forEach((smi, index) => {
+      const visits = smi.visits_per_month ? 
+        `👁 ${formatNumber(smi.visits_per_month)}/мес` : 
+        '👁 нет данных';
+      const backdate = smi.can_backdate ? '📅 Да' : '📅 Нет';
+      
+      response += `*${index + 1}. ${smi.name}*\n`;
+      response += `   🌍 ${smi.country}\n`;
+      response += `   📂 ${smi.category}\n`;
+      response += `   ${visits}\n`;
+      response += `   Задним числом: ${backdate}\n`;
+      
+      if (smi.website) {
+        response += `   🔗 [Сайт](${smi.website})\n`;
+      }
+      
+      response += `\n`;
+    });
+    
+    if (results.length > 10) {
+      response += `\n_Показано 10 из ${results.length} результатов_\n`;
+    }
+    
+    response += `\n📞 *Для заказа услуги свяжитесь с менеджером*`;
+    
+    bot.sendMessage(chatId, response, {
+      parse_mode: 'Markdown',
+      disable_web_page_preview: true,
+      ...getMainMenu()
+    });
+    
+  } catch (error) {
+    console.error('Ошибка поиска СМИ:', error);
+    bot.sendMessage(chatId,
+      '❌ *Ошибка при поиске СМИ*\n\nПопробуйте позже или свяжитесь с менеджером.',
+      {
+        parse_mode: 'Markdown',
+        ...getMainMenu()
+      }
+    );
+  }
+}
+
+// Обработка кнопки "Назад"
+function handleBackButton(chatId, state) {
+  if (state.section === 'smi') {
+    switch(state.step) {
+      case 4:
+        setUserState(chatId, 'smi', 3);
+        bot.sendMessage(chatId, '📊 Выберите уровень посещаемости:', getVisitsMenu());
+        break;
+      case 3:
+        setUserState(chatId, 'smi', 2);
+        bot.sendMessage(chatId, '📂 Выберите категорию:', getCategoriesMenu());
+        break;
+      case 2:
+        setUserState(chatId, 'smi', 1);
+        bot.sendMessage(chatId, '🌍 Выберите страну:', getCountriesMenu());
+        break;
+      default:
+        clearUserState(chatId);
+        bot.sendMessage(chatId, 'Главное меню:', getMainMenu());
+    }
+  } else {
+    clearUserState(chatId);
+    bot.sendMessage(chatId, 'Главное меню:', getMainMenu());
+  }
+}
+
+// ========== ЗАПУСК СЕРВЕРА ==========
+
 app.listen(port, () => {
   console.log(`✅ Сервер запущен на порту ${port}`);
-  console.log(`🤖 Бот готов к работе!`);
+  console.log(`🤖 PR Media Bot готов к работе!`);
   console.log(`📊 База: 105,764+ записей СМИ`);
   console.log(`🌐 Webhook: ${webhookUrl}`);
   console.log(`🏥 Health check: ${renderUrl}/health`);
-});
-
-// Обработка ошибок
-bot.on('polling_error', (error) => {
-  console.error('❌ Ошибка polling:', error.message);
-});
-
-bot.on('webhook_error', (error) => {
-  console.error('❌ Ошибка webhook:', error.message);
 });
