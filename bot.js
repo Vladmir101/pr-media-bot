@@ -1,4 +1,4 @@
-// bot.js - УПРОЩЕННАЯ И УЛУЧШЕННАЯ ВЕРСИЯ
+// bot.js - ПОЛНЫЙ КОД С АНАЛИЗОМ БАЗЫ
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
@@ -29,7 +29,12 @@ const {
   getDatabaseStats,
   formatNumber,
   testSMI,
-  searchSMIDebug
+  searchSMIDebug,
+  analyzeDatabase,
+  getTableStructure,
+  getSampleData,
+  checkDataQuality,
+  fixCategoryIssues
 } = require('./database');
 
 // ========== НАСТРОЙКА WEBHOOK ==========
@@ -91,12 +96,17 @@ app.get('/', (req, res) => {
         <a href="https://t.me/pr_media_pro_bot" target="_blank">Открыть в Telegram</a>
       </div>
       
-      <h3>📱 Команды для тестирования:</h3>
+      <h3>📱 Команды для админа:</h3>
       <ul>
         <li><code>/start</code> - Главное меню</li>
         <li><code>/test</code> - Проверка базы данных</li>
-        <li><code>/debug</code> - Расширенная отладка</li>
+        <li><code>/debug США IT</code> - Отладка поиска</li>
         <li><code>/stats</code> - Статистика базы</li>
+        <li><code>/tables</code> - Структура таблиц</li>
+        <li><code>/analyze</code> - Полный анализ базы</li>
+        <li><code>/sample smi</code> - Примеры данных</li>
+        <li><code>/quality</code> - Качество данных</li>
+        <li><code>/fixcats</code> - Исправить категории</li>
       </ul>
     </body>
     </html>
@@ -194,7 +204,7 @@ const getBackButton = () => ({
   }
 });
 
-// ========== КОМАНДЫ БОТА ==========
+// ========== КОМАНДЫ БОТА ДЛЯ АНАЛИЗА ==========
 
 // Команда /start
 bot.onText(/\/start/, async (msg) => {
@@ -263,16 +273,32 @@ bot.onText(/\/test/, async (msg) => {
       if (smi.visits_per_month) {
         response += `   👁 ${formatNumber(smi.visits_per_month)}/мес\n`;
       }
-      response += `   📅 ${smi.can_backdate ? 'Да' : 'Нет'}\n\n`;
+      response += `   📅 ${smi.can_backdate ? 'Да' : 'Нет'}\n`;
+      response += `   💰 Цена: ${smi.price_usd ? '$' + smi.price_usd : 'нет данных'}\n`;
+      response += `   ⏱️ Срок: ${smi.lead_time_hours ? smi.lead_time_hours + 'ч' : 'нет данных'}\n\n`;
     });
     
     if (results.length > 5) {
       response += `\n... и еще ${results.length - 5} СМИ\n`;
     }
     
-    response += `\n📊 *Структура данных в базе*\n`;
-    response += `• Страны: ${results.map(s => s.country).filter((v,i,a) => a.indexOf(v) === i).slice(0,5).join(', ')}...\n`;
-    response += `• Категории: ${results.map(s => s.category).filter((v,i,a) => a.indexOf(v) === i).slice(0,5).join(', ')}...\n`;
+    response += `\n📊 *Статистика по примерам:*\n`;
+    
+    // Собираем уникальные категории
+    const categories = [...new Set(results.map(s => s.category))];
+    response += `• Категории: ${categories.slice(0, 5).join(', ')}${categories.length > 5 ? '...' : ''}\n`;
+    
+    // Собираем уникальные страны
+    const countries = [...new Set(results.map(s => s.country))];
+    response += `• Страны: ${countries.slice(0, 3).join(', ')}${countries.length > 3 ? '...' : ''}\n`;
+    
+    // Проверяем наличие цен
+    const hasPrices = results.filter(s => s.price_usd).length;
+    response += `• С ценами: ${hasPrices} из ${results.length}\n`;
+    
+    // Проверяем наличие посещаемости
+    const hasVisits = results.filter(s => s.visits_per_month).length;
+    response += `• С посещаемостью: ${hasVisits} из ${results.length}\n`;
     
     await bot.sendMessage(chatId, response, {
       parse_mode: 'Markdown',
@@ -293,7 +319,6 @@ bot.onText(/\/debug/, async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
   
-  // Пример: /debug США IT
   const parts = text.split(' ');
   if (parts.length >= 3) {
     const country = parts[1];
@@ -322,6 +347,9 @@ bot.onText(/\/debug/, async (msg) => {
         response += `   📂 ${smi.category}\n`;
         if (smi.visits_per_month) {
           response += `   👁 ${formatNumber(smi.visits_per_month)}/мес\n`;
+        }
+        if (smi.price_usd) {
+          response += `   💰 $${smi.price_usd}\n`;
         }
         response += `\n`;
       });
@@ -353,13 +381,15 @@ bot.onText(/\/stats/, async (msg) => {
       response += `🌍 Стран: ${stats.countries_count}\n`;
       response += `📂 Категорий: ${stats.categories_count}\n`;
       response += `📅 С задним числом: ${formatNumber(stats.backdate_count)}\n`;
+      response += `💰 С ценами: ${formatNumber(stats.with_prices_count)}\n`;
+      response += `👁 С посещаемостью: ${formatNumber(stats.with_visits_count)}\n`;
       
       // Популярные категории
       const categories = await getCategories();
       if (categories.length > 0) {
-        response += `\n🏷️ *Категории:*\n`;
+        response += `\n🏷️ *Категории (${categories.length}):*\n`;
         categories.slice(0, 10).forEach(cat => {
-          response += `• ${cat.name}\n`;
+          response += `• ${cat.name} (${formatNumber(cat.count)})\n`;
         });
         if (categories.length > 10) {
           response += `• ... и еще ${categories.length - 10}\n`;
@@ -380,7 +410,315 @@ bot.onText(/\/stats/, async (msg) => {
   }
 });
 
-// ========== ОСНОВНАЯ ЛОГИКА ==========
+// Команда /tables - структура таблиц
+bot.onText(/\/tables/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  try {
+    await bot.sendMessage(chatId, '🗄️ Получаю структуру таблиц...', getBackButton());
+    
+    const structure = await getTableStructure();
+    
+    let response = '🗄️ *СТРУКТУРА БАЗЫ ДАННЫХ*\n\n';
+    
+    if (structure.error) {
+      response += `❌ Ошибка: ${structure.error}`;
+    } else {
+      response += `📊 *Всего таблиц:* ${structure.tables.length}\n\n`;
+      
+      structure.tables.forEach((table, index) => {
+        response += `*${index + 1}. Таблица: ${table.table_name}*\n`;
+        response += `   📝 ${table.comment || 'нет описания'}\n`;
+        response += `   📊 Записей: ${formatNumber(table.row_count)}\n`;
+        
+        if (table.columns && table.columns.length > 0) {
+          response += `   🏷️ Колонки (${table.columns.length}):\n`;
+          table.columns.forEach(col => {
+            response += `      • ${col.column_name} (${col.data_type})`;
+            if (col.is_nullable === 'NO') response += ' 🔒 NOT NULL';
+            if (col.column_default) response += ` ⚡ ${col.column_default}`;
+            response += '\n';
+          });
+        }
+        response += '\n';
+      });
+    }
+    
+    await bot.sendMessage(chatId, response, {
+      parse_mode: 'Markdown',
+      ...getMainMenu()
+    });
+    
+  } catch (error) {
+    console.error('Ошибка структуры:', error);
+    await bot.sendMessage(chatId, 
+      '❌ *Ошибка получения структуры*\n\n' + error.message,
+      { parse_mode: 'Markdown', ...getMainMenu() }
+    );
+  }
+});
+
+// Команда /sample - примеры данных
+bot.onText(/\/sample/, async (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
+  
+  const parts = text.split(' ');
+  const tableName = parts[1] || 'smi';
+  
+  try {
+    await bot.sendMessage(chatId, `📋 Получаю примеры из таблицы ${tableName}...`, getBackButton());
+    
+    const sample = await getSampleData(tableName, 3);
+    
+    let response = `📋 *ПРИМЕРЫ ДАННЫХ: ${tableName.toUpperCase()}*\n\n`;
+    
+    if (sample.error) {
+      response += `❌ Ошибка: ${sample.error}`;
+    } else if (sample.rows.length === 0) {
+      response += `❌ Таблица ${tableName} пуста или не существует`;
+    } else {
+      response += `✅ Найдено записей: ${sample.total}\n`;
+      response += `📊 Показываю ${sample.rows.length} из ${sample.total}\n\n`;
+      
+      sample.rows.forEach((row, rowIndex) => {
+        response += `*Запись ${rowIndex + 1}:*\n`;
+        
+        Object.keys(row).forEach(key => {
+          const value = row[key];
+          if (value !== null && value !== undefined) {
+            const strValue = String(value);
+            response += `  • ${key}: ${strValue.substring(0, 100)}${strValue.length > 100 ? '...' : ''}\n`;
+          }
+        });
+        
+        response += '\n';
+      });
+      
+      response += `\n📊 *Колонки таблицы ${tableName}:*\n`;
+      sample.columns.forEach(col => {
+        response += `• ${col}\n`;
+      });
+    }
+    
+    await bot.sendMessage(chatId, response, {
+      parse_mode: 'Markdown',
+      ...getMainMenu()
+    });
+    
+  } catch (error) {
+    console.error('Ошибка выборки:', error);
+    await bot.sendMessage(chatId, 
+      '❌ *Ошибка получения данных*\n\n' + error.message,
+      { parse_mode: 'Markdown', ...getMainMenu() }
+    );
+  }
+});
+
+// Команда /analyze - полный анализ
+bot.onText(/\/analyze/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  try {
+    await bot.sendMessage(chatId, '🔍 Полный анализ базы данных...', getBackButton());
+    
+    const analysis = await analyzeDatabase();
+    
+    let response = '🔍 *ПОЛНЫЙ АНАЛИЗ БАЗЫ ДАННЫХ*\n\n';
+    
+    if (analysis.error) {
+      response += `❌ Ошибка: ${analysis.error}`;
+    } else {
+      response += `📊 *ОБЩАЯ СТАТИСТИКА:*\n`;
+      response += `• Таблиц: ${analysis.tables.length}\n`;
+      response += `• Всего записей: ${formatNumber(analysis.total_records)}\n`;
+      response += `• Занимает: ${analysis.database_size}\n\n`;
+      
+      // Анализ таблицы smi
+      if (analysis.smi_analysis) {
+        const smi = analysis.smi_analysis;
+        response += `📰 *АНАЛИЗ ТАБЛИЦЫ SMI:*\n`;
+        response += `• Записей: ${formatNumber(smi.total)}\n`;
+        response += `• Активных: ${formatNumber(smi.active)} (${smi.active_percent}%)\n`;
+        response += `• С ценами: ${formatNumber(smi.with_prices)} (${smi.with_prices_percent}%)\n`;
+        response += `• С посещаемостью: ${formatNumber(smi.with_visits)} (${smi.with_visits_percent}%)\n`;
+        response += `• С задним числом: ${formatNumber(smi.with_backdate)} (${smi.with_backdate_percent}%)\n`;
+        
+        if (smi.categories && smi.categories.length > 0) {
+          response += `\n🏷️ *РАСПРЕДЕЛЕНИЕ ПО КАТЕГОРИЯМ:*\n`;
+          smi.categories.slice(0, 10).forEach(cat => {
+            response += `• ${cat.category}: ${formatNumber(cat.count)} (${cat.percent}%)\n`;
+          });
+          if (smi.categories.length > 10) {
+            response += `• ... и еще ${smi.categories.length - 10} категорий\n`;
+          }
+        }
+        
+        if (smi.countries && smi.countries.length > 0) {
+          response += `\n🌍 *ТОП-5 СТРАН:*\n`;
+          smi.countries.slice(0, 5).forEach(country => {
+            response += `• ${country.country}: ${formatNumber(country.count)}\n`;
+          });
+        }
+        
+        if (smi.price_stats) {
+          response += `\n💰 *СТАТИСТИКА ЦЕН:*\n`;
+          response += `• Средняя цена: $${smi.price_stats.avg.toFixed(2)}\n`;
+          response += `• Минимальная: $${smi.price_stats.min}\n`;
+          response += `• Максимальная: $${smi.price_stats.max}\n`;
+        }
+        
+        if (smi.visits_stats) {
+          response += `\n👁 *СТАТИСТИКА ПОСЕЩАЕМОСТИ:*\n`;
+          response += `• Средняя: ${formatNumber(smi.visits_stats.avg)}/мес\n`;
+          response += `• Медиана: ${formatNumber(smi.visits_stats.median)}/мес\n`;
+        }
+      }
+      
+      // Проблемы с данными
+      if (analysis.issues && analysis.issues.length > 0) {
+        response += `\n⚠️ *ПРОБЛЕМЫ С ДАННЫМИ:*\n`;
+        analysis.issues.slice(0, 10).forEach(issue => {
+          response += `• ${issue}\n`;
+        });
+        if (analysis.issues.length > 10) {
+          response += `• ... и еще ${analysis.issues.length - 10} проблем\n`;
+        }
+      }
+    }
+    
+    // Разделяем сообщение если слишком длинное
+    const maxLength = 4000;
+    if (response.length > maxLength) {
+      const parts = [];
+      for (let i = 0; i < response.length; i += maxLength) {
+        parts.push(response.substring(i, i + maxLength));
+      }
+      
+      for (let i = 0; i < parts.length; i++) {
+        await bot.sendMessage(chatId, parts[i], {
+          parse_mode: 'Markdown',
+          ...(i === parts.length - 1 ? getMainMenu() : {})
+        });
+        if (i < parts.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+    } else {
+      await bot.sendMessage(chatId, response, {
+        parse_mode: 'Markdown',
+        ...getMainMenu()
+      });
+    }
+    
+  } catch (error) {
+    console.error('Ошибка анализа:', error);
+    await bot.sendMessage(chatId, 
+      '❌ *Ошибка анализа базы*\n\n' + error.message,
+      { parse_mode: 'Markdown', ...getMainMenu() }
+    );
+  }
+});
+
+// Команда /quality - качество данных
+bot.onText(/\/quality/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  try {
+    await bot.sendMessage(chatId, '📊 Анализирую качество данных...', getBackButton());
+    
+    const quality = await checkDataQuality();
+    
+    let response = '📊 *КАЧЕСТВО ДАННЫХ В БАЗЕ*\n\n';
+    
+    if (quality.error) {
+      response += `❌ Ошибка: ${quality.error}`;
+    } else {
+      response += `📈 *ОБЩИЙ РЕЙТИНГ КАЧЕСТВА:* ${quality.quality_score}/100%\n\n`;
+      
+      response += `📰 *ТАБЛИЦА SMI:*\n`;
+      Object.keys(quality.smi_quality).forEach(key => {
+        const item = quality.smi_quality[key];
+        response += `• ${item.label}: ${item.value} (${item.score}/100)\n`;
+      });
+      
+      if (quality.issues && quality.issues.length > 0) {
+        response += `\n⚠️ *КРИТИЧЕСКИЕ ПРОБЛЕМЫ:*\n`;
+        quality.issues.slice(0, 10).forEach(issue => {
+          response += `• ${issue}\n`;
+        });
+      }
+      
+      response += `\n💡 *РЕКОМЕНДАЦИИ:*\n`;
+      quality.recommendations.forEach(rec => {
+        response += `• ${rec}\n`;
+      });
+    }
+    
+    await bot.sendMessage(chatId, response, {
+      parse_mode: 'Markdown',
+      ...getMainMenu()
+    });
+    
+  } catch (error) {
+    console.error('Ошибка качества:', error);
+    await bot.sendMessage(chatId, 
+      '❌ *Ошибка анализа качества*\n\n' + error.message,
+      { parse_mode: 'Markdown', ...getMainMenu() }
+    );
+  }
+});
+
+// Команда /fixcats - исправить категории
+bot.onText(/\/fixcats/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  try {
+    await bot.sendMessage(chatId, '🔄 Исправляю категории... Это может занять время.', getBackButton());
+    
+    const result = await fixCategoryIssues();
+    
+    let response = '🔄 *РЕЗУЛЬТАТ ИСПРАВЛЕНИЯ КАТЕГОРИЙ*\n\n';
+    
+    if (result.error) {
+      response += `❌ Ошибка: ${result.error}`;
+    } else {
+      response += `✅ Категории проверены и исправлены!\n\n`;
+      response += `📊 *Результаты:*\n`;
+      response += `• Всего категорий: ${result.total_categories}\n`;
+      response += `• Исправлено записей: ${result.fixed_records}\n`;
+      response += `• Новые категории: ${result.new_categories.length}\n`;
+      
+      if (result.new_categories.length > 0) {
+        response += `\n🏷️ *Добавленные категории:*\n`;
+        result.new_categories.forEach(cat => {
+          response += `• ${cat}\n`;
+        });
+      }
+      
+      if (result.remaining_issues && result.remaining_issues.length > 0) {
+        response += `\n⚠️ *Оставшиеся проблемы:*\n`;
+        result.remaining_issues.slice(0, 5).forEach(issue => {
+          response += `• ${issue}\n`;
+        });
+      }
+    }
+    
+    await bot.sendMessage(chatId, response, {
+      parse_mode: 'Markdown',
+      ...getMainMenu()
+    });
+    
+  } catch (error) {
+    console.error('Ошибка исправления:', error);
+    await bot.sendMessage(chatId, 
+      '❌ *Ошибка исправления категорий*\n\n' + error.message,
+      { parse_mode: 'Markdown', ...getMainMenu() }
+    );
+  }
+});
+
+// ========== ОСНОВНАЯ ЛОГИКА БОТА ==========
 
 // Обработка кнопки "СМИ"
 bot.onText(/📰 СМИ/, (msg) => {
@@ -448,7 +786,8 @@ bot.onText(/📊 Статистика/, async (msg) => {
   clearUserState(chatId);
   
   // Используем команду /stats
-  bot.onText(/\/stats/, msg); // Вызываем обработчик команды /stats
+  const statsCommand = { text: '/stats', chat: msg.chat };
+  bot.onText(/\/stats/, statsCommand);
 });
 
 // Обработка кнопки "Менеджер"
@@ -471,7 +810,7 @@ bot.onText(/📞 Менеджер/, (msg) => {
   );
 });
 
-// ========== ОБРАБОТКА СООБЩЕНИЙ ==========
+// ========== ОБРАБОТКА СООБЩЕНИЙ ДЛЯ СМИ ==========
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -651,11 +990,14 @@ bot.on('message', async (msg) => {
                 `👁 ${formatNumber(smi.visits_per_month)}/мес` : 
                 '👁 нет данных';
               const backdate = smi.can_backdate ? '📅 Да' : '📅 Нет';
+              const price = smi.price_usd ? `💰 $${smi.price_usd}` : '💰 нет цены';
+              const time = smi.lead_time_hours ? `⏱️ ${smi.lead_time_hours}ч` : '';
               
               response += `${index + 1}. *${smi.name}*\n`;
               response += `   🌍 ${smi.country}\n`;
               response += `   📂 ${smi.category}\n`;
               response += `   ${visits}\n`;
+              response += `   ${price} ${time}\n`;
               response += `   Задним числом: ${backdate}\n`;
               
               if (smi.website) {
