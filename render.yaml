@@ -6,7 +6,7 @@ services:
     startCommand: node bot.js
     envVars:
       - key: PORT
-        value: 3000
+        value: 3001
       - key: USE_WEBHOOK
         value: true
       - key: NODE_ENV
